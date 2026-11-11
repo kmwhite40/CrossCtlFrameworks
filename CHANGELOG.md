@@ -6,6 +6,465 @@ the project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Upgrading — operator steps for this release, in order
+1. **Rebuild and run the migrator image**: `docker compose build api migrator
+   && docker compose up migrator`. `build api` alone leaves the migrations
+   unapplied, and the code then fails on missing columns and tables:
+   - `0093`: `ksis.retired_at` (every KSI read);
+   - `0094`: `ksis.methods`;
+   - `0095`: `marketplace_products` (the 20x page and dependency routes);
+   - `0096`: `notification_reads` (`/api/notifications`, `/governance`);
+   - `0097`: the orphaned-alert cleanup (deletes only).
+   - `0098`: `assurance_edges.source` replaces `confidence`. Existing edges are
+     labelled `unsourced:pre-0098` until the graph is rebuilt.
+   **Rebuild the graph after migrating; this is required, not optional.** Run
+   `ccf assurance graph-rebuild` (or press Rebuild on `/assurance` or `/graph`).
+   Graphs built before this release carry the old edge labels and lack the
+   `system_ids` / `system_id` stamps on AI-agent and risk nodes, so `/graph`
+   would show another system's agents and risks reached through a shared vendor.
+   A KSI's links to controls are labelled with that KSI row's own `source`, so
+   a graph shows whichever catalog its rows came from when it was built. After
+   step 3 replaces the rows, the next rebuild (the scheduler's, or another
+   `graph-rebuild`) labels them from the new catalog.
+2. `ccf sources-seed`. This registers the watched FedRAMP rules dataset, the
+   Marketplace data and its schema. Existing rows are untouched.
+3. `ccf fedramp20x seed-ksi`. This moves the catalog to the 46 FedRAMP 2026
+   KSIs and retires the phase-one 51 (never deleted). Until then the reliability
+   check warns, and systems are scored on the phase-one rows as before.
+4. Optional: `ccf fedramp20x marketplace-refresh` loads the Marketplace now
+   instead of at the next scheduled poll.
+5. Expect readiness to change once, because the denominator moves to what
+   each system's Class and Path owe. A Rev5 (Agency-path) system now shows no
+   KSI readiness number (`no_ksis_owed`) rather than one computed from
+   dependencies alone.
+
+### Added — a compliance graph drawn from Concord's own records
+- **`/graph`** draws one system: its controls, and the capabilities, KSIs,
+  tests, POA&Ms, evidence and connectors linked to them, coloured by status.
+  A table view shows the same nodes and links for screen readers and audit.
+- `/graph` shows what `GET /api/assurance/graph/systems/{id}?scope=system&hops=6`
+  returns; the page and the API read the same view.
+- **Every link names its source** (`poams`, `capability_controls`,
+  `crosswalk:securescore`, ...), shown on hover, in the node panel and in the
+  table. A KSI's link to a control carries the KSI row's own `source` (for
+  example `fedramp-rules:<version>`), and a row that records none draws no
+  such link. Nothing is inferred: frameworks that meet only through an 800-53
+  control are shown as a path through it. A capability is linked to the
+  controls it `addresses`.
+- The page states every condition in words, including any part of the build
+  that failed, and blames the build for a missing system only when the
+  systems part itself failed. The node panel links "Open record" (or "Open
+  list" for types with no single record). The control search accepts the
+  catalog's spellings (`AC-02`, `ac-2`, `AC-02(01)`) and says whether a control
+  is drawn, in the graph but not drawn, or absent from the graph; clearing it
+  restores the page's notice. The owner filter is offered only when a node
+  names an owner; otherwise the page says no owners are recorded.
+- Up to 500 drawn nodes are laid out with `cose`, larger graphs with
+  `concentric`; the page draws at most 3,000. If the drawing library does not
+  load, the page says so and opens the tables.
+- Inspired by myctrl.tools/graph; none of its data is used (its crosswalks are
+  97% bridge-inferred and carry no provenance).
+
+### Changed — the assurance graph no longer guesses
+- Connectors were linked to every system in the organization at "confidence
+  0.6". A connector is now linked to the connector tests it produced, and
+  only when it is the organization's one connector of that type.
+- `confidence` is removed from the graph and its API; edges carry
+  `provenance` instead.
+- A control is one node per system, not one per catalog row: assessment
+  objectives and ODP rows fold into the control they decompose, and the node
+  takes the worst status among them.
+- AI-agent nodes carry `system_ids` and risk nodes `system_id`, so
+  `scope=system` (and `/graph`) no longer pulls in another system's agents or
+  risks through a shared vendor.
+- A part of the graph that fails to build is recorded and named on the page;
+  the build is `partial`, not `ok`. Each part now runs in its own savepoint,
+  so one failure no longer takes the rest of the build down with it, and
+  whatever the failed part had added before it failed is removed.
+- A `partial` build is visible outside `/graph`: `/assurance` shows a
+  "partial" chip and the failed parts, the `assurance_graph_freshness` check
+  warns and names them, and the scheduler's cycle summary counts
+  `assurance_partial` and names each `assurance_partial_parts` entry.
+- A deleted system is no longer a graph node. An AI agent's `system_ids`
+  entry that is not a system id (such as `"prod"`) is skipped instead of
+  failing the agents part of the build.
+- Capability derivation no longer lists a capability twice in a control's
+  `derived_from` when it is bound to the system through two components.
+  Existing rows are rewritten on the next derive run.
+- `GET /api/assurance/graph/systems/{id}` gains `scope=system`, `built_at`,
+  `build_status` and `failed_contributors`.
+
+### Fixed — follow-ups from the whole-branch review of the compliance graph
+- The `assurance_graph_freshness` check judges **each organization's own
+  latest build**. It read only the newest run platform-wide, so in a cycle over
+  N organizations a partial or stale graph in any but the last one read PASS.
+  It now warns naming the organizations and what failed, the stalest decides
+  the age, and PASS needs every organization fresh and complete.
+- A deleted system's controls, KSIs, capabilities, POA&Ms, risks, scans,
+  tests and evidence objects are no longer drawn as unconnected nodes, nor
+  counted on `/assurance` (DATA-04).
+- An AI agent's `system_ids` entry of non-ASCII digits (`"²"`, `"١٢"`) is
+  skipped instead of failing the agents slice.
+- `/graph?system_id=` with more than 18 digits is a 404, not a 500.
+- If parsing or drawing throws, `/graph` replaces "Drawing the graph…" with
+  "The graph could not be drawn" and opens the tables.
+
+### Fixed — from review of the last three commits
+- The package-data guard test translated globs with `fnmatch`, where `*`
+  crosses `/`, so `rules_data/*.json` "covered" a nested file the wheel
+  leaves out. It now uses setuptools' semantics: `*` stays in one segment,
+  `**` spans segments, and hidden entries are excluded. The semantics are
+  pinned by their own test.
+- A system that owes no KSIs left its CSO profile's readiness status and its
+  Prometheus gauge series at their last values. The profile returns to
+  `not_started`, unless parked at a submission state, and the gauge series is
+  dropped. An unseeded catalog now also gives no readiness number. The
+  validate event (and its webhooks) and `ccf package list` no longer print
+  "None%".
+- The overlay-drift check compares every overlay field (`rule`, `methods`,
+  `validation_method`, `validation_frequency`, `automation_level`) and names
+  the drifted KSIs.
+- A KSI's `definitions` is null, not an empty list, when the dataset cannot
+  be read or the KSI is retired, so "unknown" differs from "uses no defined
+  terms".
+- The governance-scan test no longer runs ConMon across other modules'
+  organizations.
+
+### Added — FedRAMP's definitions beside each KSI
+- `GET /api/fedramp/20x/ksis/{id}` returns `definitions`: the FedRAMP
+  Definitions (FRD) entry for every defined term the indicator's statement
+  uses. FedRAMP's guidance says "Use the FRD meaning whenever a defined term
+  appears". All 13 terms the 46 KSIs use resolve today. A term without an
+  entry would come back with no definition, never an invented one.
+
+### Fixed — from a whole-branch review
+- **The Marketplace data files were not packaged.** The Docker image installs
+  the wheel, which did not contain `fedramp20x/marketplace_data/`. In the
+  image, `ccf sources-seed` therefore raised and rolled back every source's
+  registration, and the Marketplace never refreshed. The tests ran on an
+  editable install and could not see it. Now packaged, and
+  `tests/test_package_data_is_complete.py` fails for any data file under
+  `src/` that package-data misses.
+- The governance page's manual scan raised no org alerts for an unscoped
+  caller. It now uses `run_all`, as the API scan does.
+- A system that owes no KSIs (Rev5 / Agency path) showed "Overall 100%",
+  computed from dependency readiness alone, beside "Scored on 0 KSIs". It now
+  shows no number, with status `no_ksis_owed`, and is not snapshotted or
+  charted. The DOCX and OSCAL exports no longer print "None".
+- The reliability check now also compares each KSI's seeded rule and methods
+  with `ksi_rules.json`. A database seeded before the method curation was
+  revised kept evaluating removed methods under a PASS.
+- `GET /marketplace/products?limit=-1` returned a 500; `limit` is now ≥1.
+
+### Added — which FedRAMP process requirements a system owes
+- The SDR's `fedRampRequirements` was entirely authored, and Concord could
+  not say which of the 245 FRR requirements a system owes.
+  `ccf.fedramp20x.frr_scope` derives it from the rules: a requirement is
+  owed when its subset's `applicability` lists the system's Class and the
+  scenario's type and path, and it `affects` Providers.
+- **Scenarios come from the rules, not a cross product.** Subsets that name
+  a single type show that 20x is Program-only, Rev5 is Program or Agency,
+  and Class A exists only under 20x. Type is not recorded, so the answer is
+  `owed` (every scenario still possible) plus `conditional` entries that
+  name the scenarios they depend on. Class C on the Agency path owes 162,
+  all certain. Class A on the Agency path is reported as impossible.
+- Class A also owes what `FRC-CLA-MFR`/`RFR`/`OFR` name (51 in all), which
+  subset applicability alone undercounts. Force comes from the requirement
+  or its class variant and is never borrowed from another class. Processes
+  marked `placeholder` are left out.
+- `GET /api/fedramp/20x/systems/{id}/requirements` returns the scope, and the
+  20x page lists it. The SDR seed reports `frr_unaddressed`: MUST / MUST NOT
+  requirements owed in every possible scenario, **in force today**, with no
+  authored entry. That is the requirements half of the to-do list, beside
+  `omitted_ksi_ids`.
+- Fixed after independent review:
+  - A type-specific bucket (VDR's `20x.TFR` / `rev5.TFR`) counted for both
+    types, so "...for 20x" came out as an owed MUST for Rev5-only systems.
+  - FedRAMP's effective dates were ignored. Most Rev5 requirements obtain
+    2027-01-01, so each requirement now carries its dates and `in_force`.
+  - A hidden dedupe-key collision under RLS aborted an org's entire digest
+    every cycle. `bus.notify` now contains it in a savepoint and logs it.
+  - `run_all` skips soft-deleted organizations.
+  - An unscoped non-admin may not scan every tenant.
+
+### Fixed — the scheduler's alerts reached no one
+- The scheduler ran the alert digest unscoped, so every overdue-task, ATO,
+  POA&M, policy/vendor/risk review, training and access-review alert was
+  stored with no organization. RLS and the inbox both hide such rows from
+  members, so nobody saw them. Per-org rollup keys such as
+  `training-overdue:{org_id}` also collapsed every tenant into one
+  `...:None` row.
+- `digest.run` with an organization now raises only that organization's
+  alerts, stored under it. Each tenant's slice of the cycle runs it under its
+  own RLS tenant. Without an organization, the digest raises only the
+  platform's upstream catalog-drift alerts. `digest.run_all` covers both for
+  the CLI and an unscoped admin's manual scan.
+- Migration `0097` deletes the orphaned org-less digest alerts, matched on
+  the digest's own dedupe-key prefixes; catalog drift is kept. They were
+  unreachable, and their globally unique keys would have blocked the per-org
+  re-creation. The next run raises whatever still applies.
+
+### Fixed — from independent review of the Marketplace and inbox changes
+- One malformed upstream Marketplace record (an over-length field, a
+  duplicated ID) could fail the flush and abort *every* source's poll, every
+  day. Such records are now skipped and counted, and are never mistaken for
+  a delisting. The apply runs in its own savepoint.
+- A Marketplace status or impact level Concord does not recognise is now a
+  finding rather than silent agreement. The page shows the authorization
+  type and the data's refresh date, and offers Unlink. The API and the page
+  share one link path, so the page also emits the audit event. An empty ID
+  unlinks rather than storing `""`.
+- FedRAMP's upstream `data.schema.json` is watched for drift against the
+  pinned digest. The vendored schema forbids unknown fields, so a new field
+  would otherwise silently stop every refresh.
+- `POST /api/catalog/sources/{id}/check` had no role check. Catalog sources
+  are platform-wide and a check can now ingest, so it requires a platform
+  admin.
+- "Read all" is one `INSERT … SELECT`. It used to build one VALUES row per
+  notification and failed past about 11k unread, the first-run case after
+  `0096`. Unread counts now count the whole inbox, not the first page. An
+  alert whose severity escalates comes back unread for everyone. A viewer
+  may mark their own notifications read, now that read-state is per user.
+
+### Fixed — any tenant member could run every tenant's automation cycle
+- `POST /api/automation/run-cycle` runs `scheduler.run_cycle`: platform
+  source polling plus every tenant's ConMon, digest and collection jobs. It
+  was gated only on being signed in, so a member of one tenant who could
+  write could drive all of them on demand. It now requires a platform-wide
+  (unscoped) principal, as `POST /ksis/seed` does. Every user belongs to an
+  organization (`users.organization_id` is NOT NULL), so in practice these
+  platform operations run from the CLI or with auth disabled. The 20x page
+  shows a tenant the `ccf fedramp20x seed-ksi` command, not a button that
+  would silently 403.
+
+### Fixed — one member's "read all" silenced every member's alerts
+- `notifications.read_at` was one column on an org-wide broadcast row.
+  Marking a notification read, or "read all", marked it read for **everyone**
+  in the organization, and `bus.notify` re-notification never clears it. Any
+  member who could write could silence everyone's overdue-task,
+  access-review and ATO-expiry alerts. Found by independent review of the
+  viewer gate.
+- Read-state is now per user (`ccf.notification_reads`, migration `0096`,
+  tenant-isolated by RLS). The API and the governance page share one
+  definition (`ccf.governance.inbox`): mark-read, read-all, unread counts and
+  `unread_only` all act on the caller's own rows. `read_at` remains only for
+  the SYSTEM principal (auth disabled), which has no user id.
+- A notification addressed to one member (`user_id`) is no longer listed for
+  the others. The list returned every row in the org.
+- No backfill: the old column records only that *someone* read a
+  notification, not who. So every user starts with existing notifications
+  unread, which re-surfaces alerts that one member had silenced for all.
+
+### Added — FedRAMP Marketplace as reference data for 20x dependencies
+- **A dependency recorded "authorized" that FedRAMP lists as merely "FedRAMP
+  Ready" used to score as authorized**, and nothing said otherwise. FedRAMP
+  publishes the Marketplace daily (`FedRAMP/marketplace-fedramp-gov-data`,
+  public domain). Concord now refreshes `ccf.marketplace_products` from its
+  `data.json`, validating it first against FedRAMP's own vendored,
+  sha-pinned `data.schema.json`.
+- A person links a dependency to a product (`marketplace_id`). The API, the
+  20x page and the package then show the Marketplace record **beside** the
+  recorded status and name each disagreement: status, impact level,
+  authorization type, a product FedRAMP has delisted, or a link to a product
+  Concord does not hold.
+  - The recorded values are never rewritten: an agency ATO not yet listed
+    is a legitimate difference.
+  - Readiness reports `marketplace_disagreements` but keeps scoring on the
+    recorded status.
+- One fetcher. The data is a `catalog_sources` row of a new kind,
+  `marketplace`, ingested by the existing poller (`check_source`), so the
+  scheduler's daily `poll_sources` step refreshes it with no new job.
+  Disabling the row is the off switch. A parse failure restores the previous
+  ETag so the next poll retries. A product missing from a refresh is
+  delisted, never deleted, and an empty product list is refused rather than
+  allowed to delist everything.
+- `ccf fedramp20x marketplace-refresh` polls it on demand, registering its
+  source row if needed. See **Upgrading** above for the order of steps.
+- Not built, and recorded why: FedRAMP's Rev. 5 baselines with assigned
+  parameter values are no longer published anywhere reachable.
+  `GSA/fedramp-automation` returns 404 and the FedRAMP organisation has no
+  successor.
+
+### Added — automated methods for FedRAMP 2026 KSIs: evidence, never a verdict
+- **13 KSIs carry 25 curated methods**, each one of Concord's own posture
+  checks (`rules_data/ksi_rules.json`). The bar for inclusion: the check's
+  *failure* must contradict the KSI's statement, and every rationale quotes
+  the statement words it contradicts. Sharing a mapped 800-53 control is not
+  enough.
+- **Independent review cut the first curation from 45 methods to 25** by
+  reading each evaluator's code. A check is not a method if it can fail while
+  the statement is met. Removed on that basis:
+  - S3 public access: reads bucket-level flags only, so private buckets
+    covered by account-level Block Public Access fail.
+  - Phishing-resistant MFA: Windows Hello and federated IdPs are invisible
+    to it.
+  - Legacy-auth block: Security Defaults blocks legacy auth too, and the
+    check still fails.
+  - MFA registration: fails for disabled and guest accounts.
+  - Inspector and Defender: the KSI accepts any monitoring service.
+  - Azure "encryption at rest": fails on a data-shape artifact.
+  - Azure Policy and GCP Org Policy: guardrails are not configuration
+    management.
+  - Alert triage: an alert in progress counts as "unactioned".
+  - Per-trail log validation, and others.
+
+  Added where a failure does contradict: Puppet runs and reporting under
+  KSI-CNA-EIS ("automatically enforce their intended operational state"), and
+  default user permissions under KSI-IAM-JIT.
+- A failing (or warning) method moves the KSI to `warn` with
+  `source: posture_method` and names the check. **No method makes a KSI
+  pass.** `warn` ranks above `manual_review_required`, so such a KSI stays in
+  `manual_review_burden` and is counted in the new
+  `contradicted_by_methods`, so a failing check never shrinks the burden.
+- A method result counts only when posture's own `effective_verdict` would
+  believe it: generated, active, scanned within 30 days, and tier 0. A
+  connector disconnected a year ago no longer "persistently validates"
+  anything.
+- Only methods that ran are evidence: no `not_run` entries in the SDR,
+  OSCAL or evidence manifest. FRC-CSX-VVK counts methods that ran. For
+  Class A (MAY, no minimum) it counts KSIs with any method, not all of them.
+  The SDR's `ksiTests` names only methods that ran on that system.
+- Class A is no longer scoped as conditional on 20x: no Rev5 subset lists
+  Class A. An Agency path with no class recorded owes no KSI.
+- Migration `0094` adds `ksis.methods`; re-run `ccf fedramp20x seed-ksi`.
+
+### Fixed — a viewer could write through most write routes
+- `docs/HANDBOOK.md` promises a viewer can read everything in their
+  organization and change nothing of it, and the threat model rates the role
+  "Reads only". But most write routes (165 by a scan of route signatures)
+  had no role check. The auth gate now refuses every mutating request from a
+  viewer: a 403, plain text for pages, and logged as
+  `auth.viewer_write_refused`. Exactly eleven (method, path) pairs are
+  excepted:
+  - own-MFA enrolment, and the viewer's own notification read-state (two
+    routes, re-allowed once read-state became per user);
+  - read-only POSTs: query run and export, OSCAL validate, pack validate;
+  - logging a trust-portal access request, which an admin then decides.
+- **Independent review removed two exceptions I had first allowed:**
+  - Notification read-state. `read_at` is one column per org-wide
+    notification, so "mark read" would have let a viewer silence every
+    user's alerts.
+  - Pack-source registration. It starts scheduled server-side fetches of a
+    caller-chosen URL.
+- Entries are method-specific and fully anchored (`\Z`). The exhaustive test
+  compares the allowlisted and public pairs against literal golden sets
+  rather than the function under test. It also sends every registered
+  mutating route as a viewer through the real gate.
+- Tests that had used a viewer as a stand-in for "any signed-in user" now
+  use `control_owner` or an admin, so their tenant-isolation and
+  live-capture subjects still mean something.
+- Notification read-state was org-wide for every role; fixed in the entry
+  above.
+
+### Changed — 20x readiness, packages and SDRs are scoped to what the Certification Class owes
+- **A Class A system was scored against 46 KSIs; FedRAMP requires seven of
+  it.** `FRC-CLA-MFR` lists them in its machine-readable `related` field.
+  Classes B–D owe every KSI (`IVV-CSX-AIA`: "MUST include all Key Security
+  Indicators"), and five KSIs are explicitly **Optional** for Class B. The
+  new `ccf.fedramp20x.applicability` derives all of this from the vendored
+  rules using the existing `System.certification_class`. Nothing reads
+  `baseline`, and nothing is authored by Concord. Each decision cites the rule
+  that produced it.
+- Readiness counts only required KSIs (states, reviews and open exceptions
+  alike) and reports `ksi_scope` and `certification_class` beside the score.
+  A system with no recorded class stays unscoped and is labelled as such. The
+  SDR's derived indicators, and so its to-do list, and the authorization
+  package cover required and optional KSIs only, with each package entry
+  carrying its applicability.
+- `FRC-CSX-VVK` (automated validation methods per KSI: A MAY, B ≥1, C ≥2,
+  D ≥4) is reported against the automated methods a KSI has on that system:
+  capture leaves in its rule plus curated posture-check methods that have
+  actually run there (see "automated methods" above).
+- Tests pin the upstream wording this parses, including that Class A's
+  `IVV-CSX-AIA` variant defers to its alternative framework. A re-vendored
+  dataset that moves any of it then fails a test instead of re-scoping
+  systems silently.
+- **Path matters too.** Every KSI rule sits in a 20x, Program-path subset.
+  An Agency-path system is Rev5 by elimination and is scored on no KSIs; its
+  Rev5 Class owes the control list in `IVV-CSF-AIA` instead. Class A on the
+  Agency path contradicts FRC-CLA and is reported as a scope problem rather
+  than resolved. On the Program path, or with no path recorded, the scope is
+  stated as conditional on the system being 20x, because Concord deliberately
+  does not record certification type.
+- Every per-system consumer now agrees with readiness about scope: CLI
+  `list-gaps` (`readiness.open_gaps`), onboarding step 4, the dashboard's KSI
+  counts, drift alerts, sealed package facts, the package's exception list and
+  validation count, and the SDR. An SDR entry this seed did not refresh,
+  retired or out of scope, loses its frozen `ksiImplementationStatus`. The
+  seed reports such entries as `out_of_scope_ksi_ids`.
+- In a validation rule, only a `connector_capture` leaf counts as an
+  automated method. `control_state` and the other kinds read records an
+  operator entered. Curated posture-check methods count too, added in a later
+  entry.
+- Readiness snapshots and the Prometheus gauge change denominator once at
+  deploy, and again whenever a system's class or path changes. Compare
+  snapshots across that line with care.
+- The 20x readiness tiles no longer render "—%" for an absent value.
+- The assessor-review and exception forms now go through the same code as
+  the API (`ccf.fedramp20x.records`). A review recorded on the page now
+  attributes the reviewer, opens the finding POA&M and emits the audit event.
+
+### Fixed — the 20x assessor-review and exception forms had no role check
+- Any signed-in user could record an "accepted" 3PAO review or a KSI
+  exception through the page. The API refuses both to anyone but
+  admin/assessor and admin respectively, and the forms now use the same gates.
+  (Profile and dependency writes, then open to every role, are refused to
+  viewers by the auth-gate change above.)
+
+### Changed — the KSI catalog is FedRAMP's Consolidated Rules for 2026, not Concord's phase-one summary
+- **Every SDR Concord produced cited KSIs the current rules do not define.**
+  The catalog was the 2025 phase-one set (51 indicators, `KSI-IAM-01` …, wording
+  summarized, mappings "Concord's REPRESENTATIVE interpretation"). FedRAMP's
+  2026 Consolidated Rules define 46 with a new ID scheme (`KSI-CED-RAT`), drop
+  TPR, add SCR, and keep no phase-one ID. The catalog is now built from
+  `FedRAMP/rules` @ `a89d784` (dataset `2026.10.13.01`), vendored under
+  `ccf/fedramp20x/rules_data/` with a sha256 `MANIFEST.json` and validated against
+  FedRAMP's own JSON Schema (formats enforced) on load. Statements are FedRAMP's
+  verbatim, except the five indicators FedRAMP states per class: their
+  description is Concord's labelled join ("Class B: … / Class C: …") and the
+  verbatim variants are in `statement_by_class`. Control mappings are FedRAMP's,
+  re-spelled canonically (`at-2.2` → `AT-2(2)`); `KSI-PIY-RES` maps to none.
+  `cmmc_refs` is empty because FedRAMP publishes none. Themes FedRAMP marks
+  `placeholder` or `empty` contribute no indicators.
+- **Found via myctrl.tools, taken from FedRAMP.** The aggregator names
+  `FedRAMP/rules` as its KSI source but served a copy three months old. Its
+  crosswalks (97% inferred via a bridge catalog), truncated control text,
+  licence labels and CIS-derived guidance were reviewed and not imported; see
+  `docs/superpowers/specs/2026-10-14-fedramp-consolidated-rules-design.md`.
+- **Retired, never deleted.** Migration `0093` adds `ksis.retired_at` and
+  `statement_by_class`. `seed_ksis` retires rows the dataset no longer defines —
+  tenant state, results, reviews and exceptions cascade from `ksis`, so a delete
+  would erase history. Every reader goes through `catalog.current_ksis()` /
+  `current_ksi_ids()`; writes against a retired KSI return 409; capability↔KSI
+  links accept current IDs only (422). The seed endpoint now requires a
+  platform administrator: `ccf.ksis` is global, and a tenant admin could
+  otherwise retire indicators for every tenant. **Operator steps: rebuild and
+  run the migrator image (`docker compose build api migrator && docker compose
+  up migrator` — `build api` alone leaves `0093` unapplied, and every KSI read
+  then fails on the missing `retired_at`), then run `ccf fedramp20x seed-ksi`.**
+  Until the seed, the reliability check `fedramp20x_ksi_catalog_loaded` warns
+  that the seeded catalog does not match the pinned dataset, including rows
+  seeded from an older revision under unchanged IDs. Downgrading `0093` is
+  refused while retired rows exist: it would make both catalogs current.
+- **Verdict rules start empty.** No phase-one rule is carried onto a 2026
+  indicator, so all 46 have a `manual` verdict rule until one is authored in
+  `rules_data/ksi_rules.json` against that indicator's own statement. Curated
+  posture-check *methods* were added later: 13 KSIs carry them, are marked
+  `partial`, and can move to `warn`, but never to `pass`. Readiness
+  will drop on upgrade; that is the honest number. ConMon coverage no longer
+  counts a state with no due date as fresh — unauthored KSIs have no frequency,
+  and counting them would have reported 100% coverage of indicators nothing
+  monitors. An SDR's `ksiTests` is empty for a manual rule rather than naming
+  "manual validation" as if a test existed.
+- **Deliverables name what the rules do not define.** The SDR seed — and every
+  read of the stored SDR — reports `undefined_ksi_ids`; authored narrative on a
+  phase-one ID is kept, not destroyed, but its frozen `ksiImplementationStatus`
+  is dropped, since nothing can refresh it. Any `frrID` absent from the 245
+  FRR IDs is noted. An SCN naming
+  a retired KSI is flagged. The upstream is registered in `DEFAULT_SOURCES` as
+  `fedramp_consolidated_rules` (watched, `auto_ingest=False`), baselined to the
+  pinned digest.
+
 ### Added — the CR26 vocabulary: Accepted Weaknesses, and Certification Class and Path (P9a-i)
 - **CR26 eliminates the provider-side POA&M and replaces it with a list of
   Accepted Weaknesses, and this platform already stored the weakness** —

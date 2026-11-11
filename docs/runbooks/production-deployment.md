@@ -48,6 +48,9 @@ posture page that never changes.
 | `CCF_AWS_CAPTURE_ENABLED` | `false` | AWS configuration capture. Leave off unless an AWS connector is bound. |
 | `CCF_PREP_ENABLED` | `false` | The evidence-prep pipeline and its worker. |
 | `CCF_AI_ENABLED` | `false` | AI drafting. Off is a defensible production posture; on requires a configured provider and leaves AI-drafted content visibly badged. |
+| `CCF_EVENT_WORKER_ENABLED` | `false` | **Says a separate `event-worker` process drains the event bus** (webhook deliveries and the derived views: assurance graph, capability derivation, FedRAMP 20x re-scoring, CR26 documents). Production sets it `true` on **both** the `api` and `event-worker` services. With it `false` and `CCF_EVENT_DRAIN_INLINE` at its default `true`, the API drains the outbox in-process instead (one job every `CCF_EVENT_DRAIN_INTERVAL_SECONDS`, default 3 s) — the dev / single-operator mode. Set on the worker alone, the API keeps its inline loop and drains alongside the worker; set on neither with `CCF_EVENT_DRAIN_INLINE=false`, nothing drains and webhooks and derived views stop. `ccf event-worker` refuses to run while the flag is `false`. |
+| `CCF_NOTIFY_WEBHOOK_URL`, `CCF_NOTIFY_MIN_SEVERITY` | unset, `critical` | Slack/Teams alert delivery. **Set them identically on every service** (`api`, `prep-worker`, `assessment-worker`, `event-worker` and the rest; compose puts them on the shared `x-ccf-env` anchor): the process that raises an alert decides from them whether to queue a post, and the `event-worker` sends it. A post queued where the URL is set and drained where it is not is dead-lettered with `last_error` naming `CCF_NOTIFY_WEBHOOK_URL`, and `event_outbox` FAILs. A receiver's 4xx (other than 408/429) is also dead-lettered at once; 5xx, 408, 429 and network errors are retried on the webhook schedule. Delivery is at least once: a post whose receiver accepted it but timed out, or a worker that crashed after sending, can repeat it. Each organization's admins may also set the organization's own alert channel (Organization settings, or `PUT /api/org/notify-channel`); it needs `CCF_AI_CREDENTIAL_MASTER_KEY` (or the KMS provider) on every service, as its URL is stored encrypted. **Roll the event-worker before the API when upgrading to per-organization channels**: an older event-worker reading a newer API's organization-channel job posts it to the ops URL instead. |
+| `CCF_NOTIFY_SLACK_BOT_TOKEN`, `CCF_NOTIFY_SLACK_CHANNEL` | unset | The ops channel as Slack threads: one thread per organization ("Alerts for <org>"), each alert a reply; an org-less alert at the top level. Used only when **both** are set, and then instead of `CCF_NOTIFY_WEBHOOK_URL` for ops posts; with only one set, the webhook URL (if any) is used and `config.notify_incomplete` names the missing one at startup (api and `event-worker`). The token is a bot token (`xoxb-...`) with the `chat:write` scope, and the bot must be a member of the channel (give the channel **ID**, `C...`). Treat the token as a secret: it is sent only to `https://slack.com/api/chat.postMessage` and never logged. Set both identically on every service. A Slack refusal that a retry cannot fix (`invalid_auth`, `token_revoked`, `missing_scope`, `channel_not_found`, `not_in_channel`, `is_archived`, ...) is dead-lettered at once with the Slack error code in `last_error`; rate limits honour `Retry-After`. Changing the channel starts new threads there. In webhook mode (no Slack bot settings) every ops post is prefixed `[Org name]`, or `[Platform]` for an org-less alert. |
 
 Verify it took, rather than assuming — see section 6.
 
@@ -73,6 +76,14 @@ docker compose --profile prep --profile assessment up -d prep-worker assessment-
 Both poll in a loop and log `{"claimed": 0, ...}` against an empty queue, which
 is what healthy-and-idle looks like. Neither is needed for the scheduler.
 
+**The `event-worker` service is not behind a profile**: it starts with a plain
+`docker compose up` and runs `ccf event-worker --loop`. The compose stack sets
+`CCF_EVENT_WORKER_ENABLED: "true"` on both `api` and `event-worker`, so the API's
+inline drain loop stays off and the worker is the only drainer. A deployment
+without compose that runs the API alone inherits the `false` default and drains
+inline; one that adds a worker must set the flag on both. Against an empty queue
+the worker logs all-zero counts per cycle, which is healthy-and-idle.
+
 ### Defaults that weaken an assurance claim rather than a feature
 
 These are off by default too, and each one changes what the platform can honestly
@@ -86,6 +97,16 @@ switching them on is a compliance decision, not an operational one.
 | `CCF_FEDRAMP20X_OSCAL_VALIDATE` | `false` | FedRAMP 20x OSCAL output is not schema-validated on export. A package that fails validation at the reviewer's end is discovered by the reviewer. |
 | `CCF_OSCAL_REQUIRE_OFFICIAL_SCHEMA` | `false` | Validation falls back to a bundled schema rather than requiring the official one. |
 | `CCF_READONLY` | `false` | Not a gap — a mode. Set it for a demonstration or a frozen archive instance so nothing can be written through the UI or API.
+
+### Outbound connections
+
+Two settings decide where the server itself connects. Review both before a
+deployment inside an enclave or behind an egress allowlist.
+
+| Variable | Default | What it decides |
+|---|---|---|
+| `CCF_KEV_SYNC_ENABLED` | **`true`** | With the scheduler on, the platform fetches CISA's Known Exploited Vulnerabilities catalog from `cisa.gov` once a day. Set `false` where there is no route to it (a platform admin's manual sync on `/intel` makes the same request). A feed that would remove more than half the catalog is refused rather than applied. |
+| `CCF_WEBHOOK_ALLOW_PRIVATE_TARGETS` | `false` | Webhooks go only to public addresses. Set `true` to allow private ranges (10/8, 172.16/12, 192.168/16, fc00::/7) for a receiver on the internal network. Loopback, link-local, carrier-grade NAT and the cloud metadata addresses stay refused regardless. Only admins add webhooks; each send resolves the name again and connects to the address it checked. |
 
 ## 3. TLS and the reverse proxy
 
@@ -129,6 +150,19 @@ docker compose up migrator
 psql -c "select version_num from ccf.alembic_version;"   # confirm the head
 ```
 
+**Upgrading to per-organization alert channels and Slack ops threads
+(migrations 0119 and 0120): deploy in this order.**
+
+1. Run the migrator, and confirm the head is `0120_ops_notify_threads` or later.
+2. Roll the `event-worker`.
+3. Roll the `api` (and every other service).
+
+An `event-worker` older than the API does not know a job's `destination`. It
+posts an organization-channel job to the ops URL instead, and in Slack-only
+mode (no `CCF_NOTIFY_WEBHOOK_URL`) it has no ops URL at all, so it
+dead-letters every ops job. A new worker against an unmigrated database fails
+on the missing tables.
+
 ## 6. What to verify after the first deploy
 
 | Check | Expected |
@@ -140,10 +174,11 @@ psql -c "select version_num from ccf.alembic_version;"   # confirm the head
 | `/api/posture/summary` `systems_total` | equals live systems in that org |
 | `GET /api/reliability` → `assurance_graph_freshness` | `pass`, within a day or two of deploy. A persistent `warn` that the graph is *N*d old means no scheduler is running — see section 2a. |
 | The API log on start | `scheduler.started` with the interval, if `CCF_SCHEDULER_ENABLED=true`. Its absence is the only signal that nothing recurring will happen. |
+| `GET /api/reliability` → `event_outbox` | `pass`. A `fail` names the consumer with dead-lettered (`failed`) jobs: fix the cause (for a webhook, the receiver), then requeue from the reliability page (**Requeue** beside that consumer, admin only; a tenant admin requeues only their own organization's jobs). Requeued jobs keep their target and prior error and are retried from attempt 1. A `warn` that the queue is stalled means nothing is draining — check `CCF_EVENT_WORKER_ENABLED` above and that `event-worker` is running. |
 
 ## 7. Known limits to state before anyone relies on this
 
-- **Posture check coverage is 42 checks touching 48 of the 288 controls in a
+- **Posture check coverage is 54 checks touching 51 of the 288 controls in a
   FedRAMP Moderate baseline** — roughly 17%. Re-measure with the command below
   rather than trusting this sentence; the intersection is not asserted by a test
   (see the note following the table) and the last two figures stated from
@@ -154,7 +189,7 @@ psql -c "select version_num from ccf.alembic_version;"   # confirm the head
   | Provider | Checks | Controls evidenced |
   |---|---|---|
   | `msgraph` (Entra / Intune) | 19 | AC-2, AC-2(3), AC-2(12), AC-3, AC-6, AC-6(1), AC-7, AC-7(1), AC-8, AC-11, AC-11(1), AC-12, AC-17, AC-19(5), AC-20(2), AU-2, AU-3, AU-6, AU-12, CM-2, CM-6, IA-2, IA-2(1), IA-2(2), IA-2(11), IA-3, IR-4, MP-7, SC-28, SC-28(1), SI-2, SI-4, SI-5 |
-  | `aws_govcloud` | 13 | AC-3, AC-4, AU-2, AU-9, AU-9(3), AU-12, CM-6, CM-7, IA-2, IA-2(1), IA-5, IA-5(1), RA-5, RA-5(2), SC-7, SC-7(3), SC-28, SC-28(1), SI-2, SI-2(2), SI-4 |
+  | `aws_govcloud` | 25 | AC-3, AC-4, AC-6, AU-2, AU-9, AU-9(3), AU-11, AU-12, CM-3, CM-6, CM-7, CM-8, CM-8(2), IA-2, IA-2(1), IA-2(2), IA-5, IA-5(1), RA-5, RA-5(2), SA-9, SA-9(5), SC-7, SC-7(3), SC-8, SC-8(1), SC-12, SC-12(1), SC-28, SC-28(1), SI-2, SI-2(2), SI-4, SI-4(2) |
   | `azure_arm` | 5 | AU-4, AU-11, CM-2, CM-6, RA-5, SC-8, SC-8(1), SC-23, SC-28, SC-28(1), SI-3, SI-4 |
   | `gcp` | 3 | AU-4, AU-11, CM-2, CM-6, SC-12, SC-28, SC-28(1) |
   | `puppetdb` | 2 | CM-2, CM-6, CM-8 |
@@ -240,7 +275,7 @@ psql -c "select version_num from ccf.alembic_version;"   # confirm the head
   crosswalk shipped in the catalog reaches only 80 of the 110 at all, so 30
   requirements cannot be evidenced by any scan regardless of check coverage.
   `framework-posture` reports those as `unreachable`.
-- **A CMMC SSP shows evidence for 29 of the 110 practices**, from the 37 of 42
+- **A CMMC SSP shows evidence for 29 of the 110 practices**, from the 46 of 54
   checks that declare one. This is a *different* number from the two above and
   from the per-provider table: those count controls a check evidences, while
   this counts practices a **CMMC document can actually display**.
@@ -258,13 +293,16 @@ psql -c "select version_num from ccf.alembic_version;"   # confirm the head
   supply it: `framework_mappings` stores the 800-171 side as prose and reaches
   14 of the 32 checks, none of them the four that were failing.
 
-  Five checks are deliberately unmapped, in `practices.UNMAPPED` with the
-  argument recorded — 800-171 has no authenticator-lifetime requirement for key
-  rotation; "a Defender plan is on the Standard tier" does not say which
+  Eight checks are deliberately unmapped, in `practices.UNMAPPED` with the
+  argument recorded — the two DoD impact-level checks (GovCloud partition and
+  AWS's DoD SRG service scope) answer SRG questions 800-171 does not ask;
+  800-171 has no authenticator-lifetime requirement for key rotation; "a Defender plan is on the Standard tier" does not say which
   protection runs; Identity Protection risk detections are not a named practice;
-  Conditional Access sign-in frequency is not session termination; and 800-171
-  carries no system use notification requirement, so the AC-8 check raises
-  800-53 coverage without raising practice coverage. Their
+  Conditional Access sign-in frequency is not session termination; an IAM Access
+  Analyzer reporting external sharing is a monitor that demonstrates neither
+  least privilege nor attack detection; and 800-171 carries no system use
+  notification requirement, so the AC-8 check raises 800-53 coverage without
+  raising practice coverage. Their
   findings keep appearing in `generate_statements`' `findings_unmatched_controls`
   rather than disappearing into a zero. The practice ids and the mapped/unmapped
   split are asserted by `tests/test_check_practice_mapping_is_sound.py`.

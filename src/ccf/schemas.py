@@ -103,6 +103,7 @@ class SystemOut(ORMModel):
     baseline: str | None = None
     ato_status: str | None = None
     ato_expires_on: date | None = None
+    dod_impact_level: str | None = None
 
 
 class SystemCreate(BaseModel):
@@ -163,6 +164,8 @@ class POAMOut(ORMModel):
 
 class ComplianceSummary(BaseModel):
     system_id: int
+    #: The FIPS-199 baseline the totals are against; None when none is declared.
+    baseline: str | None = None
     total_controls: int
     implemented: int
     partial: int
@@ -170,6 +173,7 @@ class ComplianceSummary(BaseModel):
     not_implemented: int
     inherited: int
     not_applicable: int
-    coverage_pct: float
+    #: None when there is nothing to measure (no baseline, or every control N/A).
+    coverage_pct: float | None
     open_poams: int
     overdue_poams: int

@@ -40,13 +40,19 @@ credential unrecoverable.
    ccf keys-rewrap
    ```
 
-4. **Confirm nothing is unreadable.** The report lists
-   `(table, row id, the key id the row needs)` for anything it could not read.
-   A non-empty list means a predecessor is missing: put it back before going
-   further.
+4. **Confirm nothing is unreadable or damaged.** The sweep prints two kinds of
+   row it could not move, and exits non-zero while either remains:
+
+   - `unreadable <table> id=<n> needs key <id>`: a predecessor is missing. Put
+     it back before going further.
+   - `damaged <table> id=<n>: <why>`: no key will fix it. The stored value is
+     not a ciphertext, or it fails authentication under a key that is
+     configured (another store's value, or modified bytes). See below.
+
+   One damaged row does not stop the sweep; every other row is still moved.
 
    ```bash
-   ccf keys-status     # expect: nothing unreadable, everything on the current key
+   ccf keys-status     # expect: every count under the current key id, none "damaged"
    ```
 
 5. **Only then drop the predecessor** from `CCF_AI_CREDENTIAL_PREVIOUS_KEYS`
@@ -61,6 +67,7 @@ added later cannot be silently left behind:
 - `ai_provider_configs.encrypted_credential`
 - `connector_configs.encrypted_credential`
 - `user_mfa_credentials.secret_encrypted`
+- `org_notify_channels.encrypted_url`
 
 ## If a row is reported unreadable
 
@@ -68,3 +75,12 @@ It was written with a key that is no longer configured. Either restore that key
 as a predecessor and rewrap again, or — if the key is genuinely gone — delete
 the row and have its owner re-enter the credential. There is no third option;
 the ciphertext is not recoverable, which is the point of it.
+
+## If a row is reported damaged
+
+No key will read it, so do not add one. Have its owner enter the secret again
+(the AI provider key, the connector credential, the MFA enrolment, or the alert
+channel URL), which overwrites the row, then rewrap again. A damaged row that
+nobody wrote by hand is worth investigating as tampering before it is
+overwritten.
+

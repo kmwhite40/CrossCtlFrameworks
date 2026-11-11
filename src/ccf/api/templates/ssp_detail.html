@@ -25,10 +25,15 @@
     <label class="field-group"><span class="dim" style="font-size:12px">Date</span>
       <input class="input" type="date" name="document_date"
              value="{{ project.document_date.isoformat() if project.document_date else '' }}"></label>
+    {% if project.status in approved_statuses %}
+    <div class="field-group"><span class="dim" style="font-size:12px">Status</span>
+      <span class="chip chip--ok" title="Set by an approval decision">{{ project.status }}</span></div>
+    {% else %}
     <label class="field-group"><span class="dim" style="font-size:12px">Status</span>
       <select class="select" name="status">
-        {% for s in ['draft','in_review','final'] %}<option value="{{ s }}" {% if project.status==s %}selected{% endif %}>{{ s }}</option>{% endfor %}
+        {% for s in author_statuses %}<option value="{{ s }}" {% if project.status==s %}selected{% endif %}>{{ s }}</option>{% endfor %}
       </select></label>
+    {% endif %}
     <button class="btn btn--secondary" type="submit"><i data-lucide="save"></i> Save metadata</button>
   </div>
 </form>

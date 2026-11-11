@@ -23,6 +23,7 @@ from ...ai.cipher import CredentialStorageError
 from ...auth import Principal
 from ...connectors import connector_keys
 from ...connectors import credentials as connector_credentials
+from ...connectors.credential_spec import IncompleteCredential
 from ...enforcement.registry import write_credential_keys
 from ...integrations import integration_credential_keys
 from ...models_grc import ConnectorConfig
@@ -102,7 +103,12 @@ async def bind_credential(
             name=body.name,
             environment=body.environment,
             actor=principal.email,
+            prove=True,
         )
+    except IncompleteCredential as exc:
+        # A bundle that cannot authenticate -- or that AWS rejected -- is the
+        # caller's to fix, not a server fault; it used to surface as a 500.
+        raise HTTPException(422, str(exc)) from exc
     except CredentialStorageError as exc:
         raise HTTPException(400, str(exc)) from exc
     await session.commit()
@@ -127,8 +133,12 @@ async def remove_credential(
     ).scalars().first()
     if cfg is None or not cfg.encrypted_credential:
         raise HTTPException(404, "no credential bound for this connector")
+    status_was = cfg.status
     cfg.encrypted_credential = None
     cfg.key_last4 = None
     cfg.status = "not_configured"
+    await connector_credentials.emit_connector_changed(
+        session, cfg, status_was=status_was, actor=principal.email
+    )
     await session.commit()
     return connector_credentials.masked_view(cfg)

@@ -144,15 +144,30 @@ async def test_a_control_owner_cannot_register_with_auto_install(tmp_path: Path)
 
 
 @pytest.mark.asyncio
-async def test_a_viewer_can_still_register_without_auto_install(tmp_path: Path) -> None:
-    """The gate is specifically on auto_install=True -- ordinary (reviewed)
-    registration stays open to any authenticated principal, matching
-    "detection is automatic; adoption is not"."""
+async def test_a_viewer_cannot_register_a_source(tmp_path: Path) -> None:
+    """Registration (without auto_install) stays open to any role that may
+    write -- "detection is automatic; adoption is not" -- but not to a viewer:
+    registering starts scheduled server-side fetches of a caller-chosen URL,
+    which is not "changing nothing" (review of 764e87e, M1)."""
     tag = _tag()
     token, _org = await _mk_user(
         f"viewer2-{tag}@pack-rbac.test", f"PackRBAC Viewer2 Org {tag}", "viewer"
     )
     path = tmp_path / f"viewer2-{tag}.json"
+    path.write_text(json.dumps(_manifest(path.stem)), encoding="utf-8")
+    async with _client() as c:
+        resp = await _register(c, token, f"pack-{tag}", pack_source_url(path))
+        assert resp.status_code == 403, resp.text
+
+
+@pytest.mark.asyncio
+async def test_a_control_owner_can_still_register_without_auto_install(tmp_path: Path) -> None:
+    """The route's own gate is specifically on auto_install=True."""
+    tag = _tag()
+    token, _org = await _mk_user(
+        f"co2-{tag}@pack-rbac.test", f"PackRBAC CO2 Org {tag}", "control_owner"
+    )
+    path = tmp_path / f"co2-{tag}.json"
     path.write_text(json.dumps(_manifest(path.stem)), encoding="utf-8")
     async with _client() as c:
         resp = await _register(c, token, f"pack-{tag}", pack_source_url(path))
@@ -220,17 +235,14 @@ async def test_a_viewer_cannot_adopt(tmp_path: Path) -> None:
     path = tmp_path / f"adopt-{tag}.json"
     path.write_text(json.dumps(_manifest(path.stem)), encoding="utf-8")
     async with _client() as c:
+        # A viewer cannot register, sync or adopt: the auth gate refuses every
+        # one. The route's own adoption gate is pinned by the control_owner
+        # test below, which can reach it.
         created = await _register(c, token, f"pack-{tag}", pack_source_url(path))
-        source_id = created.json()["id"]
-        synced = await c.post(
-            f"/api/pack-sources/{source_id}/sync", headers=_auth(token)
-        )
-        assert synced.json()["status"] == "pending"
-
-        resp = await c.post(
-            f"/api/pack-sources/{source_id}/adopt", headers=_auth(token)
-        )
-        assert resp.status_code == 403, resp.text
+        assert created.status_code == 403, created.text
+        for verb in ("sync", "adopt"):
+            resp = await c.post(f"/api/pack-sources/1/{verb}", headers=_auth(token))
+            assert resp.status_code == 403, resp.text
 
 
 @pytest.mark.asyncio

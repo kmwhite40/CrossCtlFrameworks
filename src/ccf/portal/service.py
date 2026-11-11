@@ -33,6 +33,7 @@ from ..models_portal import (
     ExternalPortalAuditEvent,
     ExternalPrincipal,
 )
+from . import certification
 
 _TOKEN_BYTES = 32  # → ~43 url-safe chars, well within the 64-char column
 
@@ -313,6 +314,7 @@ async def create_grant(
     organization_name: str | None = None,
     package_ids: list[int] | tuple[int, ...] = (),
     evidence_ids: list[int] | tuple[int, ...] = (),
+    certification_system_ids: list[int] | tuple[int, ...] = (),
     ttl_days: int | None = 30,
     label: str | None = None,
     engagement_id: int | None = None,
@@ -371,6 +373,15 @@ async def create_grant(
             raise ValueError(
                 f"external principal {principal_id} not found in organization {org_id}"
             )
+        # The grant's kind mirrors its principal's. A mismatch -- easy to send,
+        # since the API body defaults kind to "customer" -- would file an
+        # agency's access under another kind and drop it from the agency
+        # inventory FedRAMP is given (CDS-TRC-AAI).
+        if existing.kind != kind:
+            raise ValueError(
+                f"external principal {principal_id} is kind {existing.kind!r}; "
+                f"a grant to it must be kind {existing.kind!r}, not {kind!r}"
+            )
         principal = existing
     else:
         principal = ExternalPrincipal(
@@ -382,6 +393,28 @@ async def create_grant(
 
     pkg_ids = [int(p) for p in package_ids]
     ev_ids = [int(e) for e in evidence_ids]
+    cert_ids = sorted({int(s) for s in certification_system_ids})
+    if cert_ids:
+        # Certification data is a system's; the grant may only name this
+        # organization's systems, and an assessment credential only its own.
+        owned = set(
+            (
+                await session.execute(
+                    select(System.id).where(
+                        System.id.in_(cert_ids),
+                        System.organization_id == org_id,
+                        System.deleted_at.is_(None),
+                    )
+                )
+            ).scalars()
+        )
+        if missing := [s for s in cert_ids if s not in owned]:
+            raise ValueError(f"systems {missing} not found in organization {org_id}")
+        if engagement is not None and cert_ids != [engagement.system_id]:
+            raise ValueError(
+                "an engagement-backed grant can share only its own system's "
+                "certification data"
+            )
 
     expires_at = (_now() + timedelta(days=ttl_days)) if ttl_days else None
     capped = False
@@ -390,6 +423,8 @@ async def create_grant(
         capped = True
 
     scope: dict[str, Any] = {"package_ids": pkg_ids, "evidence_ids": ev_ids}
+    if cert_ids:
+        scope["certification_system_ids"] = cert_ids
     if engagement is not None:
         scope["system_id"] = engagement.system_id
     grant = ExternalAccessGrant(
@@ -402,6 +437,7 @@ async def create_grant(
         expires_at=expires_at,
         revoked=False,
         scope=scope,
+        issued_by=actor or "system",
     )
     grant.expiry_capped = capped
     session.add(grant)
@@ -413,6 +449,8 @@ async def create_grant(
         session.add(ExternalEvidenceShare(grant_id=grant.id, evidence_object_id=eid))
 
     detail = f"{len(pkg_ids)}pkg/{len(ev_ids)}ev"
+    if cert_ids:
+        detail += f"/cert:{','.join(map(str, cert_ids))}"
     if capped and expires_at is not None:
         detail += f" expiry capped at engagement period_to {expires_at.isoformat()}"
     await record_access(session, grant, action="issued", detail=detail)
@@ -421,6 +459,7 @@ async def create_grant(
         actor=actor or "system", action="create", entity_type="external_grant",
         entity_id=str(grant.id),
         diff={"org": org_id, "kind": kind, "packages": pkg_ids, "evidence": ev_ids,
+              "certification_systems": cert_ids,
               "engagement": engagement_id, "expiry_capped": capped},
     )
     await session.flush()
@@ -440,15 +479,36 @@ async def list_grants(session: AsyncSession, *, org_id: int) -> list[ExternalAcc
 
 
 async def revoke_grant(session: AsyncSession, grant_id: int, *, actor: str | None = None) -> bool:
-    grant = await session.get(ExternalAccessGrant, grant_id)
+    """Revoke a grant, recording when and by whom (CDS-TRC-AAI history).
+
+    Revoking an already-revoked grant succeeds and changes nothing: the first
+    revocation is the one that ended access, so a second must not move its
+    date or its author -- that would rewrite the history FedRAMP is given.
+    """
+    # Locked before deciding: two concurrent revokes reading ``revoked=False``
+    # would both write, and the later one would replace the first's time and
+    # author.
+    grant = (
+        await session.execute(
+            select(ExternalAccessGrant)
+            .where(ExternalAccessGrant.id == grant_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+    ).scalar_one_or_none()
     if grant is None:
         return False
+    if grant.revoked:
+        return True
     grant.revoked = True
+    grant.revoked_at = _now()
+    grant.revoked_by = actor or "system"
     await record_access(session, grant, action="revoked")
     await _audit(
         session, organization_id=grant.organization_id,
-        actor=actor or "system", action="delete", entity_type="external_grant",
-        entity_id=str(grant.id), diff={"revoked": True},
+        actor=grant.revoked_by, action="delete", entity_type="external_grant",
+        entity_id=str(grant.id),
+        diff={"revoked": True, "revoked_at": grant.revoked_at.isoformat()},
     )
     await session.flush()
     return True
@@ -650,9 +710,20 @@ async def grant_contents(session: AsyncSession, grant: ExternalAccessGrant) -> d
         )
     ).scalars().all()
 
+    listing = await certification.list_documents(session, grant)
+    from ..cr26.snapshots import list_for_grant  # noqa: PLC0415 — cr26 imports the portal
+
+    snapshots = await list_for_grant(session, grant, limit=20)
     return {
         "grant": {"id": grant.id, "kind": grant.kind, "label": grant.label,
                   "expires_at": grant.expires_at, "engagement_id": grant.engagement_id},
+        "certification_data": {
+            "documents": listing.documents,
+            "withheld_invalid": listing.withheld_invalid,
+            "systems": certification.shared_system_ids(grant),
+            # CDS-CSO-HAD: one per Ongoing Certification Report filed.
+            "snapshots": snapshots,
+        },
         "packages": packages,
         "evidence": evidence,
         "comments": [
@@ -673,14 +744,86 @@ async def record_access(
     target_id: str | None = None,
     detail: str | None = None,
 ) -> None:
-    """Append one immutable portal audit event for a grant's access."""
+    """Append one immutable portal audit event for a grant's access.
+
+    The grantee's identity is copied onto the row so the history does not
+    depend on the principal surviving (CDS-TRC-ACL, migration 0109).
+    """
+    principal = (
+        await session.get(ExternalPrincipal, grant.principal_id)
+        if grant.principal_id is not None
+        else None
+    )
     session.add(
         ExternalPortalAuditEvent(
             organization_id=grant.organization_id, grant_id=grant.id, action=action,
             target_type=target_type, target_id=target_id, detail=detail,
+            grantee_name=principal.name if principal else None,
+            grantee_kind=principal.kind if principal else grant.kind,
+            grantee_organization=principal.organization_name if principal else None,
         )
     )
     await session.flush()
+
+
+#: A refused credential is logged at most once per grant per reason in this
+#: window (CDS-TRC-ACL; see ``record_refusal``).
+REFUSAL_LOG_WINDOW = timedelta(minutes=10)
+
+
+async def record_refusal(
+    session: AsyncSession, *, token: str | None = None, grant_id: int | None = None
+) -> str | None:
+    """Log an attempt by a grant that exists but no longer resolves (CDS-TRC-ACL).
+
+    A revoked, expired or ended-engagement credential still being presented is
+    access to certification data attempted by a known party, so it belongs in
+    that party's history. Returns the refusal reason, or ``None`` when nothing
+    was logged: a token matching no grant names no party to attribute it to.
+    The caller commits -- before raising its 401, or the rollback takes the
+    record with it.
+    """
+    grant: ExternalAccessGrant | None = None
+    if grant_id is not None:
+        grant = await session.get(ExternalAccessGrant, grant_id)
+    elif token:
+        grant = (
+            await session.execute(
+                select(ExternalAccessGrant).where(
+                    ExternalAccessGrant.token_hash == hash_token(token)
+                )
+            )
+        ).scalar_one_or_none()
+    if grant is None:
+        return None
+    current = (
+        await current_engagement_ids(session, [grant.engagement_id])
+        if grant.engagement_id is not None
+        else set()
+    )
+    status = grant_status(grant, current)
+    if status == "active":
+        return None
+    # Throttled: a dead token can be replayed without limit, and the log can
+    # neither be edited (to count) nor pruned (for six months). One record per
+    # grant per reason per window says the credential is still being presented
+    # without letting a former grantee grow the table at will.
+    recent = (
+        await session.execute(
+            select(ExternalPortalAuditEvent.id)
+            .where(
+                ExternalPortalAuditEvent.grant_id == grant.id,
+                ExternalPortalAuditEvent.action == "refused",
+                ExternalPortalAuditEvent.detail == status,
+                ExternalPortalAuditEvent.created_at > _now() - REFUSAL_LOG_WINDOW,
+            )
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    if recent is not None:
+        return None
+    await record_access(session, grant, action="refused", detail=status)
+    return status
 
 
 async def add_comment(

@@ -120,7 +120,11 @@ class ScoreSummary:
     deductions_total: int = 0
     percentage: float = 0.0
     total_controls: int = 0
+    #: Zero-deduction controls, as SPRS counts them -- which includes N/A.
     met_controls: int = 0
+    #: The N/A share of ``met_controls``: a scoping decision, not an
+    #: implementation, so a reader must be able to tell the two apart.
+    na_controls: int = 0
     ssp_present: bool = True
     #: How ``ssp_present`` was decided: ``"assessed"`` when a person recorded
     #: the SSP practice, ``"derived"`` when the profile derivation asserted it
@@ -149,6 +153,7 @@ class ScoreSummary:
             "percentage": self.percentage,
             "total_controls": self.total_controls,
             "met_controls": self.met_controls,
+            "na_controls": self.na_controls,
             "ssp_present": self.ssp_present,
             "ssp_present_source": self.ssp_present_source,
             "assessed_controls": self.assessed_controls,
@@ -203,6 +208,8 @@ def score_system(
         state_counts[state] = state_counts.get(state, 0) + 1
         if state in _MET:
             summary.met_controls += 1
+        if state == "not_applicable":
+            summary.na_controls += 1
         if src == DERIVED:
             summary.derived_controls += 1
             summary.derived_credit += credited
@@ -242,3 +249,46 @@ def score_system(
     summary.percentage = round(summary.score / MAX_SPRS_SCORE * 100, 1)
     summary.state_counts = state_counts
     return summary
+
+
+#: How a requirement that is not met is reported. ``planned`` is a full miss
+#: under the DoD methodology, so it is ``not_met`` here, not its own gap kind.
+GAP_KINDS = {
+    "not_implemented": "not_met",
+    "planned": "not_met",
+    "partial": "partial",
+    "not_assessed": "not_assessed",
+}
+
+
+def gaps(
+    rows: Iterable[Mapping[str, object]], *, recorded: Iterable[str] = ()
+) -> list[dict[str, object]]:
+    """Every requirement that is not met, with what kind of gap it is.
+
+    One list separating not met, partial and not assessed -- what an assessor
+    and a POA&M are built from -- in place of a percentage. N/A is excluded: it
+    is a scoping decision, not a gap. ``unrecorded`` marks a requirement nobody
+    has recorded any state for, distinct from one recorded as not assessed.
+    Each row is a mapping with ``control_id``, ``domain``, ``point_value`` and
+    ``state`` (the matrix rows, or ``ControlScore`` as a dict).
+    """
+    seen = set(recorded)
+    out: list[dict[str, object]] = []
+    for r in rows:
+        state = str(r.get("state") or "not_assessed")
+        kind = GAP_KINDS.get(state)
+        if kind is None:
+            continue
+        cid = str(r.get("control_id", ""))
+        pv = normalize_point_value(str(r.get("point_value", "") or "1"))
+        out.append({
+            "control_id": cid,
+            "domain": r.get("domain"),
+            "point_value": pv,
+            "state": state,
+            "gap": kind,
+            "deduction": deduction_for(pv, state),
+            "unrecorded": cid not in seen,
+        })
+    return out

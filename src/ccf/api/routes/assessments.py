@@ -26,7 +26,10 @@ from ...assessment import (
     seed_assessment_results,
     summarize_results,
 )
+from ...assessment.findings import objective_finding_options
 from ...auth import Principal
+from ...config import get_settings
+from ...governance import bus
 from ...governance.approvals import entity_state, entity_states
 from ...ingest.scanners import SEVERITY_SLA_DAYS
 from ...models import POAM, Assessment, AssessmentControlResult, Control, PoamMilestone, System
@@ -38,6 +41,30 @@ router = APIRouter(prefix="/api/assessments", tags=["assessments"])
 
 DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 _KINDS = ("self", "internal", "3pao", "ig", "audit")
+#: Kinds presented as independent of the people who own the controls. Their
+#: results are recorded by an assessor (or an admin transcribing one), never by
+#: a control owner scoring their own controls. Self and internal assessments
+#: are the organization assessing itself, so any author may record them.
+INDEPENDENT_KINDS = ("3pao", "ig", "audit")
+INDEPENDENT_RECORDER_ROLES = ("assessor", "admin")
+
+
+def require_independent_recorder(assessment: Assessment, principal: Principal) -> None:
+    """Refuse a result on an independent assessment from anyone but an assessor.
+
+    Shared by the API route and the HTML form, so the rule cannot hold on one
+    and not the other (it did, for one commit).
+    """
+    if (
+        get_settings().auth_enabled
+        and assessment.kind in INDEPENDENT_KINDS
+        and principal.role not in INDEPENDENT_RECORDER_ROLES
+    ):
+        raise HTTPException(
+            403,
+            f"results on a {assessment.kind} assessment are recorded by an assessor, "
+            "not by a control owner",
+        )
 
 
 class AssessmentCreate(BaseModel):
@@ -50,7 +77,9 @@ class AssessmentCreate(BaseModel):
 
 class ResultUpdate(BaseModel):
     finding: str | None = None
-    objective_findings: list[dict[str, str]] | None = None
+    #: Each item names an objective by ``label`` and sets its ``finding``;
+    #: everything else stored on that objective is kept (see ``update_result``).
+    objective_findings: list[dict[str, Any]] | None = None
     examine_note: str | None = None
     interview_note: str | None = None
     test_note: str | None = None
@@ -174,6 +203,38 @@ async def assessment_summary(
     return summarize_results(await _results(session, assessment_id))
 
 
+def _merge_objective_findings(
+    stored: list[dict[str, Any]], posted: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Apply ``posted`` findings by label onto ``stored`` objectives.
+
+    The PUT used to replace the list wholesale, which erased the acceptance
+    projection (rationale, gaps, citations, dissent) from the row the SAR is
+    built from, and took any string as a finding. The page's save was fixed
+    for exactly this (``ui.assessment_save_result``); this is the same rule,
+    on the same vocabulary (``objective_finding_options``), for the API.
+    Validated in full before anything is applied, so a refusal writes nothing.
+    """
+    by_label = {str(p.get("label", "")): p for p in stored}
+    changes: dict[str, str] = {}
+    for item in posted:
+        label = str(item.get("label", ""))
+        if label not in by_label:
+            raise HTTPException(422, f"objective {label!r} is not part of this control's record")
+        current = str(by_label[label].get("finding") or "not_assessed")
+        finding = str(item.get("finding") or current)
+        if finding not in {key for key, _l, _c in objective_finding_options(current)}:
+            raise HTTPException(
+                422, f"objective {label!r}: {finding!r} is not a recognized finding; nothing saved"
+            )
+        changes[label] = finding
+    return [
+        {**p, "finding": changes[str(p.get("label", ""))]}
+        if str(p.get("label", "")) in changes else p
+        for p in stored
+    ]
+
+
 @router.put("/{assessment_id}/controls/{control_id}")
 async def update_result(
     assessment_id: int,
@@ -182,7 +243,8 @@ async def update_result(
     session: AsyncSession = Depends(get_session),
     principal: Principal = Depends(get_principal),
 ) -> dict[str, Any]:
-    await _require_assessment(session, assessment_id, principal)
+    assessment = await _require_assessment(session, assessment_id, principal)
+    require_independent_recorder(assessment, principal)
     if body.finding is not None and body.finding not in FINDINGS:
         raise HTTPException(422, f"finding must be one of {', '.join(FINDINGS)}")
     result = (
@@ -194,7 +256,12 @@ async def update_result(
     ).scalar_one_or_none()
     if result is None:
         raise HTTPException(404, "control not found in assessment")
-    for k, v in body.model_dump(exclude_none=True).items():
+    data = body.model_dump(exclude_none=True)
+    if "objective_findings" in data:
+        data["objective_findings"] = _merge_objective_findings(
+            list(result.objective_findings or []), data["objective_findings"]
+        )
+    for k, v in data.items():
         setattr(result, k, v)
     result.observed_on = datetime.now(UTC).date()
     await session.commit()
@@ -284,6 +351,17 @@ async def poams_from_findings(
             )
         )
         session.add(poam)
+        await session.flush()
+        await bus.emit(
+            session,
+            verb="created",
+            entity_type="poam",
+            entity_id=poam.id,
+            summary=f"POA&M opened from assessment finding: {poam.title}",
+            org_id=await bus.system_org(session, a.system_id),
+            actor=principal.email,
+            payload={"system_id": a.system_id},
+        )
         created += 1
     await session.commit()
     return {"created": created}

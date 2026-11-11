@@ -177,6 +177,13 @@ POAM_ACTIVE_STATUSES: tuple[str, ...] = ("open", "in_progress")
 POAM_UNRESOLVED_STATUSES: tuple[str, ...] = ("open", "in_progress", "risk_accepted")
 POAM_CLOSED_STATUSES: tuple[str, ...] = ("completed", "closed")
 
+# SSP project status. An author moves a plan between the first two; the
+# terminal ones are a reviewer's decision and arrive only through
+# governance.approvals.decide, behind its separation-of-duties check. "final" is
+# the older spelling of that decision and is kept so existing rows still read.
+SSP_AUTHOR_STATUSES: tuple[str, ...] = ("draft", "in_review")
+SSP_APPROVED_STATUSES: tuple[str, ...] = ("approved", "final")
+
 
 def poam_leaves_risk_accepted(old_status: str, new_status: str) -> bool:
     """True when a status transition moves a POA&M OUT of ``risk_accepted``.
@@ -296,4 +303,8 @@ PIPELINE_STAGES: tuple[str, ...] = (
 # docs/superpowers/specs/2026-09-21-3pao-engagement-design.md §1.1: the two must
 # not be merged, because merging them would put an independent firm inside the
 # tenant's own user table.
-EXTERNAL_PRINCIPAL_KINDS: tuple[str, ...] = ("customer", "assessor", "vendor")
+#
+# ``agency`` is a federal agency (a user or a system) given access to FedRAMP
+# Certification Data through the trust center. CDS-TRC-AAI asks for an inventory
+# of exactly these, so they are a kind of their own rather than a "customer".
+EXTERNAL_PRINCIPAL_KINDS: tuple[str, ...] = ("customer", "assessor", "vendor", "agency")

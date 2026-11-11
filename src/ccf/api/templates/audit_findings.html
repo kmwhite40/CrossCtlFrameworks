@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+{% block title %}Audit Findings · Concord{% endblock %}
+{% block heading %}Audit findings{% endblock %}
+{% block subtitle %}Every finding raised in this organization's audit engagements, in one list, with the POA&amp;M it was promoted to. Findings are raised and updated inside their engagement.{% endblock %}
+{% block content %}
+<section class="kpi-grid kpi-grid--4">
+  {% for s in severities %}
+  <div class="kpi"><span class="kpi__label">Open {{ s }}</span><span class="kpi__value">{{ open_by_severity[s] }}</span></div>
+  {% endfor %}
+</section>
+<p class="dim">{{ open_total }} open of {{ total }} finding{{ 's' if total != 1 }} recorded. "Open" is any status other than closed; the tiles count open findings by severity{% if open_other %}, and {{ open_other }} open finding{{ 's' if open_other != 1 }} carry a severity outside these four{% endif %}.</p>
+
+<form method="get" action="/audit/findings" class="filters">
+  <label class="field-group"><span class="label">Severity</span>
+    <select class="select" name="severity"><option value="">Any severity</option>
+      {% for s in severities %}<option value="{{ s }}" {% if severity == s %}selected{% endif %}>{{ s }}</option>{% endfor %}
+    </select></label>
+  <label class="field-group"><span class="label">Status</span>
+    <select class="select" name="status"><option value="">Any status</option>
+      {% for s in statuses %}<option value="{{ s }}" {% if status == s %}selected{% endif %}>{{ s | replace('_',' ') }}</option>{% endfor %}
+    </select></label>
+  <button class="btn btn--secondary" type="submit"><i data-lucide="filter"></i> Filter</button>
+</form>
+
+{% if rows %}
+<div class="table-wrap"><table>
+  <thead><tr><th>Finding</th><th>Engagement</th><th>Severity</th><th>Status</th><th>POA&amp;M</th><th>Raised</th></tr></thead>
+  <tbody>{% for row in rows %}{% set f = row.f %}<tr>
+    <td><strong>{{ f.title }}</strong>{% if f.description %}<div class="dim clamp-3">{{ f.description }}</div>{% endif %}</td>
+    <td><a href="/audit-workspace/{{ f.engagement_id }}">{{ row.engagement }}</a></td>
+    <td><span class="chip {% if f.severity in ('high','critical') %}chip--err{% elif f.severity == 'moderate' %}chip--warn{% else %}chip--ghost{% endif %}">{{ f.severity }}</span></td>
+    <td><span class="chip {% if f.status == 'closed' %}chip--ok{% else %}chip--ghost{% endif %}">{{ f.status | replace('_',' ') }}</span></td>
+    <td>{% if row.poam %}<a href="/poams?system_id={{ row.poam.system_id }}">{{ row.poam.title }}</a> <span class="chip chip--ghost">{{ row.poam.status | replace('_',' ') }}</span>{% else %}<span class="dim">not promoted</span>{% endif %}</td>
+    <td>{{ f.created_at.strftime('%Y-%m-%d') if f.created_at else '—' }}</td>
+  </tr>{% endfor %}</tbody>
+</table></div>
+{% elif total %}
+<div class="card empty-state"><i data-lucide="filter-x"></i><h2>No finding matches</h2><p>None of the {{ total }} recorded finding{{ 's' if total != 1 }} has this severity and status. <a href="/audit/findings">Clear the filters</a>.</p></div>
+{% else %}
+<div class="card empty-state"><i data-lucide="search-check"></i><h2>No audit findings</h2><p>No finding has been raised in this organization's audit engagements. Findings are added inside an engagement on <a href="/audit-workspace">Audit Planning</a>.</p></div>
+{% endif %}
+{% endblock %}

@@ -1,0 +1,113 @@
+{% extends "base.html" %}
+{% block title %}{{ committee.name }} · Committees · Concord{% endblock %}
+{% block heading %}{{ committee.name }}{% endblock %}
+{% block subtitle %}Chair: {{ chair or 'not named' }} · cadence: {{ (committee.cadence or 'not set') | replace('_', ' ') }}{% if not committee.active %} · inactive{% endif %}. Meetings are recorded by the chair or an administrator.{% endblock %}
+{% block actions %}<a class="btn btn--ghost" href="/committees">All committees</a>{% endblock %}
+{% block content %}
+<section class="grid-2-1">
+  <article class="card panel">
+    <header class="panel__head"><h2 class="panel__title">Charter</h2></header>
+    <div class="panel__body">
+      {% if committee.charter %}<p style="white-space:pre-line;margin:0">{{ committee.charter }}</p>
+      {% else %}<p class="panel__empty">No charter recorded.{% if can_admin %} Add it under "Edit committee".{% endif %}</p>{% endif %}
+    </div>
+  </article>
+  <article class="card panel">
+    <header class="panel__head"><h2 class="panel__title">Members</h2><span class="panel__hint" data-members="{{ members | length }}">{{ members | length }} besides the chair</span></header>
+    <div class="panel__body">
+      {% if members %}
+      <ul class="feed">{% for m in members %}
+        <li class="feed__item"><span class="chip chip--ghost">{{ m.role }}</span><span class="feed__main"><span class="feed__title">{{ m.user }}</span></span>
+          {% if can_admin %}<form method="post" action="/committees/{{ committee.id }}/members/{{ m.id }}/remove"><button class="btn btn--ghost btn--sm" type="submit">Remove</button></form>{% endif %}</li>
+      {% endfor %}</ul>
+      {% else %}<p class="panel__empty">No members recorded.</p>{% endif %}
+      {% if can_admin %}
+      <form method="post" action="/committees/{{ committee.id }}/members" class="filters" style="margin-top:12px">
+        <div class="field-group"><label class="label" for="m-user">Add or change a member</label>
+          <select id="m-user" class="select" name="user_id" required>{% for u in users %}<option value="{{ u.id }}">{{ u.full_name or u.email }}</option>{% endfor %}</select></div>
+        <div class="field-group"><label class="label" for="m-role">Role</label>
+          <select id="m-role" class="select" name="role">{% for r in roles %}<option value="{{ r }}"{% if r == 'member' %} selected{% endif %}>{{ r }}</option>{% endfor %}</select></div>
+        <button class="btn btn--secondary btn--sm" type="submit">Save member</button>
+      </form>
+      {% endif %}
+    </div>
+  </article>
+</section>
+
+{% if actions %}
+<article class="card panel">
+  <header class="panel__head"><h2 class="panel__title">Open actions</h2><span class="panel__hint">{{ actions | length }} with a due date, not closed</span></header>
+  <ul class="feed">{% for a in actions %}
+    <li class="feed__item"><span class="chip {% if a.overdue %}chip--err{% else %}chip--ghost{% endif %}">{% if a.overdue %}overdue{% else %}open{% endif %}</span>
+      <a class="feed__main" href="#meeting-{{ a.meeting.id }}"><span class="feed__title">{{ a.text }}</span><span class="feed__meta">meeting of {{ a.meeting.held_on }} · owner {{ a.owner or 'not named' }}</span></a>
+      <span class="feed__date{% if a.overdue %} feed__date--late{% endif %}">due {{ a.due_on }}</span></li>
+  {% endfor %}</ul>
+</article>
+{% endif %}
+
+<article class="card panel">
+  <header class="panel__head"><h2 class="panel__title">Meetings</h2><span class="panel__hint">{{ meetings | length }} recorded</span></header>
+  {% if meetings %}
+  {% for mt in meetings %}
+  <div class="panel__body" id="meeting-{{ mt.meeting.id }}">
+    <h3 style="margin:0 0 4px">{{ mt.meeting.held_on }}</h3>
+    <div class="dim" style="font-size:13px">Recorded by {{ mt.meeting.recorded_by or 'unknown' }} · attendees: {{ mt.attendees | join(', ') if mt.attendees else 'none recorded' }}</div>
+    {% if mt.meeting.minutes %}<p style="white-space:pre-line">{{ mt.meeting.minutes }}</p>{% else %}<p class="panel__empty">No minutes recorded.</p>{% endif %}
+    {% if mt.decisions %}
+    <div class="table-wrap"><table class="data">
+      <thead><tr><th>Decision</th><th>Owner</th><th>Due</th><th>Status</th>{% if can_record %}<th></th>{% endif %}</tr></thead>
+      <tbody>{% for d in mt.decisions %}<tr>
+        <td>{{ d.text }}</td>
+        <td>{{ d.owner or '—' }}</td>
+        <td>{{ d.due_on or '—' }}</td>
+        <td>{% if d.closed_on %}<span class="chip chip--ok">closed {{ d.closed_on }}</span>{% elif not d.due_on %}<span class="chip chip--ghost">decision, no due date</span>{% elif d.overdue %}<span class="chip chip--err">overdue</span>{% else %}<span class="chip chip--warn">open</span>{% endif %}</td>
+        {% if can_record %}<td>{% if d.due_on and not d.closed_on %}<form method="post" action="/committees/{{ committee.id }}/meetings/{{ mt.meeting.id }}/decisions/{{ d.index }}/close"><button class="btn btn--ghost btn--sm" type="submit">Close</button></form>{% endif %}</td>{% endif %}
+      </tr>{% endfor %}</tbody>
+    </table></div>
+    {% endif %}
+  </div>
+  {% endfor %}
+  {% else %}
+  <div class="empty-state"><h2>No meetings recorded</h2><p>{% if can_record %}Record the first meeting below: when it was held, who attended, the minutes, and any decisions with an owner and due date.{% else %}The chair or an administrator records meetings here.{% endif %}</p></div>
+  {% endif %}
+</article>
+
+{% if can_record %}
+<article class="card panel">
+  <header class="panel__head"><h2 class="panel__title">Record a meeting</h2><span class="panel__hint">a decision with a due date becomes an open action until closed</span></header>
+  <form method="post" action="/committees/{{ committee.id }}/meetings" class="card__body">
+    <div class="filters">
+      <div class="field-group"><label class="label" for="mt-date">Held on</label><input id="mt-date" class="input" type="date" name="held_on" value="{{ today }}" required></div>
+      <div class="field-group"><label class="label" for="mt-att">Attendees</label>
+        <select id="mt-att" class="select" name="attendee_user_ids" multiple size="4">{% for u in users %}<option value="{{ u.id }}">{{ u.full_name or u.email }}</option>{% endfor %}</select></div>
+    </div>
+    <div class="field-group" style="margin-top:12px"><label class="label" for="mt-min">Minutes</label><textarea id="mt-min" class="input" name="minutes" rows="4"></textarea></div>
+    {% for i in blank_decisions %}
+    <div class="filters" style="margin-top:12px">
+      <div class="field-group"><label class="label" for="d{{ i }}-text">Decision {{ i + 1 }}</label><input id="d{{ i }}-text" class="input" name="decision_text"></div>
+      <div class="field-group"><label class="label" for="d{{ i }}-owner">Owner</label>
+        <select id="d{{ i }}-owner" class="select" name="decision_owner"><option value="">— none —</option>{% for u in users %}<option value="{{ u.id }}">{{ u.full_name or u.email }}</option>{% endfor %}</select></div>
+      <div class="field-group"><label class="label" for="d{{ i }}-due">Due</label><input id="d{{ i }}-due" class="input" type="date" name="decision_due"></div>
+    </div>
+    {% endfor %}
+    <button class="btn btn--primary" type="submit" style="margin-top:12px">Record meeting</button>
+  </form>
+</article>
+{% endif %}
+
+{% if can_admin %}
+<article class="card panel">
+  <header class="panel__head"><h2 class="panel__title">Edit committee</h2></header>
+  <form method="post" action="/committees/{{ committee.id }}" class="card__body filters">
+    <div class="field-group"><label class="label" for="e-name">Name</label><input id="e-name" class="input" name="name" value="{{ committee.name }}" required maxlength="255"></div>
+    <div class="field-group"><label class="label" for="e-cad">Cadence</label>
+      <select id="e-cad" class="select" name="cadence"><option value="">— not set —</option>{% for c in cadences %}<option value="{{ c }}"{% if c == committee.cadence %} selected{% endif %}>{{ c | replace('_', ' ') }}</option>{% endfor %}</select></div>
+    <div class="field-group"><label class="label" for="e-chair">Chair</label>
+      <select id="e-chair" class="select" name="chair_user_id"><option value="">— none —</option>{% for u in users %}<option value="{{ u.id }}"{% if u.id == committee.chair_user_id %} selected{% endif %}>{{ u.full_name or u.email }}</option>{% endfor %}</select></div>
+    <div class="field-group"><label class="label" for="e-active">Active</label><label class="dim"><input id="e-active" type="checkbox" name="active" value="1"{% if committee.active %} checked{% endif %}> meets and records decisions</label></div>
+    <div class="field-group" style="grid-column:1/-1"><label class="label" for="e-charter">Charter</label><textarea id="e-charter" class="input" name="charter" rows="4">{{ committee.charter or '' }}</textarea></div>
+    <button class="btn btn--primary" type="submit">Save</button>
+  </form>
+</article>
+{% endif %}
+{% endblock %}

@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% block title %}Projects · Concord{% endblock %}
+{% block heading %}Projects &amp; action plans{% endblock %}
+{% block subtitle %}Projects with status and dates, tied to the POA&amp;Ms, tasks, risks and systems they deliver. Progress is linked POA&amp;Ms closed (completed or closed) over linked POA&amp;Ms.{% endblock %}
+{% block actions %}<a class="btn btn--secondary" href="/poams"><i data-lucide="list-checks"></i>POA&amp;Ms</a>{% endblock %}
+{% block content %}
+<section class="card">
+  <div class="card__header"><div class="card__title">Projects</div><span class="dim">{{ projects|length }}</span></div>
+  {% if projects %}
+  <div class="table-wrap"><table>
+    <thead><tr><th>Project</th><th>Status</th><th>Owner</th><th>Start</th><th>Target</th><th>Linked</th><th>Progress</th></tr></thead>
+    <tbody>{% for p in projects %}{% set st = stats[p.id] %}<tr id="project-{{ p.id }}">
+      <td><a href="/projects/{{ p.id }}"><strong>{{ p.name }}</strong></a></td>
+      <td><span class="chip {% if p.status == 'done' %}chip--ok{% elif p.status == 'on_hold' %}chip--warn{% elif p.status == 'active' %}chip--info{% else %}chip--ghost{% endif %}">{{ p.status | replace('_', ' ') }}</span></td>
+      <td>{{ owners.get(p.owner_user_id, '—') }}</td>
+      <td>{{ p.start_on or '—' }}</td>
+      <td>{% if p.target_on %}<span class="{% if p.target_on < today and p.status != 'done' %}kanban__due--late{% endif %}">{{ p.target_on }}</span>{% else %}—{% endif %}</td>
+      <td class="dim">{{ st.counts.poam }} POA&amp;Ms · {{ st.counts.task }} tasks · {{ st.counts.risk }} risks · {{ st.counts.system }} systems</td>
+      <td data-progress="{{ st.pct if st.pct is not none else 'none' }}">{% if st.pct is not none %}<strong>{{ st.pct }}%</strong> <span class="dim">({{ st.closed }} of {{ st.linked }} POA&amp;Ms closed)</span>{% else %}<span class="dim" title="No POA&amp;Ms linked, so there is nothing to measure progress by">—</span>{% endif %}</td>
+    </tr>{% endfor %}</tbody>
+  </table></div>
+  {% else %}
+  <div class="empty-state"><i data-lucide="folder-kanban"></i><h2>No projects recorded</h2><p>Create a project, then link the POA&amp;Ms, tasks, risks and systems it delivers. Its progress is measured by the linked POA&amp;Ms that close.</p></div>
+  {% endif %}
+</section>
+
+{% if can_write %}
+<section class="card card--elevated" style="margin-top:16px">
+  <div class="card__header"><div class="card__title">New project</div></div>
+  <form method="post" action="/projects" class="card__body filters">
+    <input class="input" name="name" required placeholder="Name" aria-label="Name">
+    <input class="input" name="description" placeholder="Description" aria-label="Description">
+    <select class="select" name="owner_user_id" aria-label="Owner"><option value="">No owner</option>{% for u in users %}<option value="{{ u.id }}">{{ u.full_name or u.email }}</option>{% endfor %}</select>
+    <select class="select" name="status" aria-label="Status">{% for s in statuses %}<option value="{{ s }}">{{ s | replace('_', ' ') }}</option>{% endfor %}</select>
+    <label class="field-group"><span class="label">Start</span><input class="input" type="date" name="start_on"></label>
+    <label class="field-group"><span class="label">Target</span><input class="input" type="date" name="target_on"></label>
+    <button class="btn btn--primary" type="submit"><i data-lucide="plus"></i>Create project</button>
+  </form>
+</section>
+{% endif %}
+{% endblock %}

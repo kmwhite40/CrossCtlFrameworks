@@ -1,0 +1,65 @@
+{% extends "base.html" %}
+{% block title %}Compliance Obligations · Concord{% endblock %}
+{% block heading %}{% if regulatory %}Regulatory requirements{% else %}Compliance obligations{% endif %}{% endblock %}
+{% block subtitle %}{% if regulatory %}Obligations whose source is a statute or regulation. <a href="/obligations">All obligations</a> · <a href="/regulatory">Regulatory change log</a>.{% else %}What the organization must do, where the duty comes from, who owns it, when it is due, and the catalog controls that satisfy it. Mapped controls are checked against the control catalog when saved.{% endif %}{% endblock %}
+{% block actions %}<a class="btn btn--secondary" href="/regulatory"><i data-lucide="scale"></i>Regulatory change</a>{% endblock %}
+{% block content %}
+<section class="kpi-grid kpi-grid--4">
+  <div class="kpi"><span class="kpi__label">Open</span><span class="kpi__value">{{ counts.open }}</span><span class="kpi__foot">of {{ counts.total }} recorded</span></div>
+  <div class="kpi"><span class="kpi__label">Overdue</span><span class="kpi__value{% if counts.overdue %} kpi__value--danger{% endif %}">{{ counts.overdue }}</span><span class="kpi__foot">open or not met, past the due date</span></div>
+  <div class="kpi"><span class="kpi__label">Met</span><span class="kpi__value">{{ counts.met }}</span><span class="kpi__foot">as recorded by the owner</span></div>
+  <div class="kpi"><span class="kpi__label">Not met</span><span class="kpi__value">{{ counts.not_met }}</span><span class="kpi__foot">{{ counts.not_applicable }} not applicable</span></div>
+</section>
+
+<form method="get" action="/obligations" class="filters" style="margin:16px 0">
+  <select class="select" name="status" aria-label="Status"><option value="">Any status</option>{% for s in statuses %}<option value="{{ s }}"{% if status == s %} selected{% endif %}>{{ s | replace('_', ' ') }}</option>{% endfor %}</select>
+  <button class="btn btn--secondary" type="submit"><i data-lucide="filter"></i>Filter</button>
+</form>
+
+<section class="card">
+  <div class="card__header"><div class="card__title">Register</div><span class="dim">{{ rows|length }}</span></div>
+  {% if rows %}
+  <div class="table-wrap"><table>
+    <thead><tr><th>Obligation</th><th>Source</th><th>Citation</th><th>Owner</th><th>Frequency</th><th>Due</th><th>Controls</th><th>Status</th>{% if can_write %}<th>Update</th>{% endif %}</tr></thead>
+    <tbody>{% for o in rows %}{% set late = o.status in open_statuses and o.due_on and o.due_on < today %}<tr id="obligation-{{ o.id }}">
+      <td><strong>{{ o.title }}</strong>{% if o.description %}<div class="dim" style="font-size:12px">{{ o.description }}</div>{% endif %}</td>
+      <td><span class="chip chip--brand">{{ o.source }}</span></td>
+      <td>{{ o.citation or '—' }}</td>
+      <td>{{ owners.get(o.owner_user_id, '—') }}</td>
+      <td>{{ o.frequency or '—' }}</td>
+      <td>{% if o.due_on %}<span class="{% if late %}kanban__due--late{% endif %}">{{ o.due_on }}</span>{% else %}—{% endif %}</td>
+      <td>{% for cid in (o.control_ids or []) %}<a class="chip chip--ghost" href="/controls/{{ cid }}">{{ cid }}</a> {% else %}<span class="dim">none mapped</span>{% endfor %}</td>
+      <td><span class="chip {% if o.status == 'met' %}chip--ok{% elif o.status == 'not_met' or late %}chip--err{% elif o.status == 'not_applicable' %}chip--ghost{% else %}chip--warn{% endif %}">{{ o.status | replace('_', ' ') }}{% if late %} · overdue{% endif %}</span></td>
+      {% if can_write %}<td>
+        <form method="post" action="/obligations/{{ o.id }}" class="row" style="gap:6px">
+          <select class="select select--sm" name="status" aria-label="Status">{% for s in statuses %}<option value="{{ s }}"{% if o.status == s %} selected{% endif %}>{{ s | replace('_', ' ') }}</option>{% endfor %}</select>
+          <select class="select select--sm" name="owner_user_id" aria-label="Owner"><option value="">No owner</option>{% for u in users %}<option value="{{ u.id }}"{% if o.owner_user_id == u.id %} selected{% endif %}>{{ u.full_name or u.email }}</option>{% endfor %}</select>
+          <input class="input" type="date" name="due_on" value="{{ o.due_on or '' }}" aria-label="Due date">
+          <input class="input" name="control_ids" value="{{ (o.control_ids or []) | join(', ') }}" aria-label="Mapped controls">
+          <button class="btn btn--ghost btn--sm" type="submit" aria-label="Save"><i data-lucide="save"></i></button>
+        </form>
+      </td>{% endif %}
+    </tr>{% endfor %}</tbody>
+  </table></div>
+  {% else %}
+  <div class="empty-state"><i data-lucide="scale"></i><h2>No obligations {% if status %}with this status{% else %}recorded{% endif %}</h2><p>Record a statute, regulation, contract term, framework requirement or policy commitment the organization must meet, and map it to the catalog controls that satisfy it.</p></div>
+  {% endif %}
+</section>
+
+{% if can_write %}
+<section class="card card--elevated" style="margin-top:16px">
+  <div class="card__header"><div class="card__title">Record an obligation</div></div>
+  <form method="post" action="/obligations" class="card__body filters">
+    <select class="select" name="source" aria-label="Source">{% for s in sources %}<option value="{{ s }}">{{ s }}</option>{% endfor %}</select>
+    <input class="input" name="title" required placeholder="Obligation" aria-label="Title">
+    <input class="input" name="citation" placeholder="Citation (e.g. 32 CFR 170)" aria-label="Citation">
+    <input class="input" name="description" placeholder="Description" aria-label="Description">
+    <select class="select" name="owner_user_id" aria-label="Owner"><option value="">No owner</option>{% for u in users %}<option value="{{ u.id }}">{{ u.full_name or u.email }}</option>{% endfor %}</select>
+    <input class="input" name="frequency" placeholder="Frequency" aria-label="Frequency">
+    <label class="field-group"><span class="label">Due</span><input class="input" type="date" name="due_on"></label>
+    <input class="input" name="control_ids" placeholder="Controls, comma-separated (e.g. AC-2, IR-6)" aria-label="Mapped controls">
+    <button class="btn btn--primary" type="submit"><i data-lucide="plus"></i>Record obligation</button>
+  </form>
+</section>
+{% endif %}
+{% endblock %}

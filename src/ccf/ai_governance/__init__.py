@@ -9,6 +9,7 @@ incidents, and kill-switch events (each audited).
 from __future__ import annotations
 
 from .service import (
+    emit_agent_updated,
     engage_kill_switch,
     rating_for,
     review_agent,
@@ -17,6 +18,7 @@ from .service import (
 )
 
 __all__ = [
+    "emit_agent_updated",
     "engage_kill_switch",
     "rating_for",
     "review_agent",

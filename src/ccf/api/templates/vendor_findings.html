@@ -1,0 +1,82 @@
+{% extends "base.html" %}
+{% block title %}Vendor Findings · Concord{% endblock %}
+{% block heading %}Vendor findings{% endblock %}
+{% block subtitle %}Weaknesses found at third parties, with severity, status and due date. A "no" answer on a submitted questionnaire can be raised as a finding below.{% endblock %}
+{% block actions %}<a class="btn btn--secondary" href="/vendor-questionnaires"><i data-lucide="clipboard-list"></i>Questionnaires</a>{% endblock %}
+{% block content %}
+<section class="kpi-grid kpi-grid--4">
+  {% for s in severities %}
+  <div class="kpi"><span class="kpi__label">Open {{ s }}</span><span class="kpi__value">{{ open_by_sev.get(s, 0) }}</span><span class="kpi__foot">open or remediating{% if severity or status or vendor_id %}, in this filter{% endif %}</span></div>
+  {% endfor %}
+</section>
+
+<form method="get" action="/vendor-findings" class="filters" style="margin:16px 0">
+  <select class="select" name="severity" aria-label="Severity"><option value="">Any severity</option>{% for s in severities %}<option value="{{ s }}"{% if severity == s %} selected{% endif %}>{{ s }}</option>{% endfor %}</select>
+  <select class="select" name="status" aria-label="Status"><option value="">Any status</option>{% for s in statuses %}<option value="{{ s }}"{% if status == s %} selected{% endif %}>{{ s }}</option>{% endfor %}</select>
+  <select class="select" name="vendor_id" aria-label="Vendor"><option value="">Any vendor</option>{% for v in vendors %}<option value="{{ v.id }}"{% if vendor_id == v.id %} selected{% endif %}>{{ v.name }}</option>{% endfor %}</select>
+  <button class="btn btn--secondary" type="submit"><i data-lucide="filter"></i>Filter</button>
+</form>
+
+<section class="card">
+  <div class="card__header"><div class="card__title">Findings</div><span class="dim">{{ findings|length }}</span></div>
+  {% if findings %}
+  <div class="table-wrap"><table>
+    <thead><tr><th>Finding</th><th>Vendor</th><th>Severity</th><th>Status</th><th>Due</th><th>Source</th>{% if can_update %}<th>Move</th>{% endif %}</tr></thead>
+    <tbody>{% for f in findings %}<tr id="finding-{{ f.id }}">
+      <td><strong>{{ f.title }}</strong>{% if f.description %}<div class="dim" style="font-size:12px">{{ f.description }}</div>{% endif %}</td>
+      <td>{{ vendor_names.get(f.vendor_id, '—') }}</td>
+      <td><span class="sevchip sevchip--{{ f.severity }}">{{ f.severity }}</span></td>
+      <td><span class="chip {% if f.status in open_statuses %}chip--warn{% elif f.status == 'closed' %}chip--ok{% else %}chip--ghost{% endif %}">{{ f.status }}</span></td>
+      <td>{% if f.due_on %}<span class="{% if f.due_on < today and f.status in open_statuses %}kanban__due--late{% endif %}">{{ f.due_on }}</span>{% else %}—{% endif %}</td>
+      <td>{% if f.questionnaire_id %}<a href="/vendor-questionnaires/{{ f.questionnaire_id }}">questionnaire</a>{% else %}<span class="dim">recorded</span>{% endif %}</td>
+      {% if can_update %}<td>
+        <form method="post" action="/vendor-findings/{{ f.id }}/status" class="row" style="gap:6px">
+          <select class="select select--sm" name="status" aria-label="Status">{% for s in statuses %}{% if s != 'accepted' or can_accept %}<option value="{{ s }}"{% if f.status == s %} selected{% endif %}>{{ s }}</option>{% endif %}{% endfor %}</select>
+          <button class="btn btn--ghost btn--sm" type="submit" aria-label="Save status"><i data-lucide="save"></i></button>
+        </form>
+      </td>{% endif %}
+    </tr>{% endfor %}</tbody>
+  </table></div>
+  {% else %}
+  <div class="empty-state"><i data-lucide="triangle-alert"></i><h2>No vendor findings{% if severity or status or vendor_id %} match this filter{% endif %}</h2><p>Findings are recorded by an admin or assessor, directly or from a questionnaire gap.</p></div>
+  {% endif %}
+</section>
+
+{% if gaps %}
+<section class="panel" id="gaps" style="margin-top:16px">
+  <div class="panel__head"><h2 class="panel__title">Questionnaire gaps without a finding</h2><span class="panel__hint">"No" answers on submitted or reviewed questionnaires</span></div>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Question</th><th>Vendor</th><th>Questionnaire</th><th>Weight</th>{% if can_raise %}<th>Raise</th>{% endif %}</tr></thead>
+    <tbody>{% for g in gaps %}<tr>
+      <td>{{ g.title }}</td>
+      <td>{{ vendor_names.get(g.q.vendor_id, '—') }}</td>
+      <td><a href="/vendor-questionnaires/{{ g.q.id }}">{{ g.q.name }}</a></td>
+      <td>{{ g.r.weight }}</td>
+      {% if can_raise %}<td>
+        <form method="post" action="/vendor-findings/from-gap" class="row" style="gap:6px">
+          <input type="hidden" name="questionnaire_id" value="{{ g.q.id }}">
+          <input type="hidden" name="question_id" value="{{ g.r.question_id }}">
+          <select class="select select--sm" name="severity" aria-label="Severity"><option value="">by weight ({{ 'high' if g.r.weight >= 3 else 'moderate' }})</option>{% for s in severities %}<option value="{{ s }}">{{ s }}</option>{% endfor %}</select>
+          <input class="input" type="date" name="due_on" aria-label="Due date">
+          <button class="btn btn--ghost btn--sm" type="submit">Raise finding</button>
+        </form>
+      </td>{% endif %}
+    </tr>{% endfor %}</tbody>
+  </table></div>
+</section>
+{% endif %}
+
+{% if can_raise and vendors %}
+<section class="card card--elevated" style="margin-top:16px">
+  <div class="card__header"><div class="card__title">Record a finding</div></div>
+  <form method="post" action="/vendor-findings" class="card__body filters">
+    <select class="select" name="vendor_id" aria-label="Vendor" required>{% for v in vendors %}<option value="{{ v.id }}">{{ v.name }}</option>{% endfor %}</select>
+    <input class="input" name="title" required placeholder="Title" aria-label="Title">
+    <input class="input" name="description" placeholder="Description" aria-label="Description">
+    <select class="select" name="severity" aria-label="Severity">{% for s in severities %}<option value="{{ s }}"{% if s == 'moderate' %} selected{% endif %}>{{ s }}</option>{% endfor %}</select>
+    <label class="field-group"><span class="label">Due</span><input class="input" type="date" name="due_on"></label>
+    <button class="btn btn--primary" type="submit"><i data-lucide="plus"></i>Record finding</button>
+  </form>
+</section>
+{% endif %}
+{% endblock %}

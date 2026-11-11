@@ -24,6 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...auth import Principal
 from ...catalog.canonical import canonicalize
+from ...governance import bus
 from ...governance.waivers import WAIVER_STATUSES, can_approve, is_active
 from ...models import System
 from ...models_waivers import Waiver
@@ -106,6 +107,23 @@ async def _load(session: AsyncSession, waiver_id: int, principal: Principal) -> 
     ):
         raise HTTPException(404, "waiver not found")
     return w
+
+
+async def _emit_in_force_change(
+    session: AsyncSession, w: Waiver, *, verb: str, actor: str | None
+) -> None:
+    """FedRAMP 20x readiness counts the waivers in force on a system, so a
+    waiver entering or leaving force changes it. Called only when it did."""
+    await bus.emit(
+        session,
+        verb=verb,
+        entity_type="waiver",
+        entity_id=w.id,
+        summary=f"Waiver {w.id} {verb} for {w.check_key or w.control_id}",
+        org_id=w.organization_id,
+        actor=actor,
+        payload={"system_id": w.system_id},
+    )
 
 
 @router.post("/waivers", status_code=201)
@@ -257,6 +275,8 @@ async def approve_waiver(
     w.approved_by = principal.email
     w.approved_at = datetime.now(UTC)
     await session.flush()
+    if is_active(w, today=datetime.now(UTC).date()):  # not an already-lapsed one
+        await _emit_in_force_change(session, w, verb="approved", actor=principal.email)
     await record_event(
         session,
         organization_id=w.organization_id,
@@ -279,8 +299,11 @@ async def revoke_waiver(
 ) -> dict[str, Any]:
     """Withdraw a waiver. Alerting resumes on the next result."""
     w = await _load(session, waiver_id, principal)
+    was_in_force = is_active(w, today=datetime.now(UTC).date())
     w.status = "revoked"
     await session.flush()
+    if was_in_force:  # revoking a request, or a lapsed waiver, changes nothing
+        await _emit_in_force_change(session, w, verb="revoked", actor=principal.email)
     await record_event(
         session,
         organization_id=w.organization_id,

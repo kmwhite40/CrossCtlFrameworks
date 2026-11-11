@@ -1,0 +1,63 @@
+{% extends "base.html" %}
+{% block title %}Compensating Controls · Concord{% endblock %}
+{% block heading %}Compensating controls{% endblock %}
+{% block subtitle %}Substitute measures accepted in place of a control on a system, with their expiry. One person proposes; an administrator who did not propose it approves or rejects. Approved measures are listed as exceptions in force on <a href="/exceptions">Exceptions</a> until they are retired.{% endblock %}
+{% block content %}
+<section class="kpi-grid kpi-grid--4">
+  {% for s in ['proposed', 'approved', 'rejected', 'retired'] %}
+  <div class="kpi"><span class="kpi__label">{{ s | capitalize }}</span><span class="kpi__value">{{ counts[s] }}</span></div>
+  {% endfor %}
+</section>
+
+<div class="layout-split-r">
+  <div>
+    {% if rows %}
+    <div class="table-wrap"><table>
+      <thead><tr><th>Control</th><th>System</th><th>Measure</th><th>Status</th><th>Proposed by</th><th>Decided by</th><th>Expires</th><th></th></tr></thead>
+      <tbody>{% for cc, system_name in rows %}{% set lapsed = cc.expires_on and cc.expires_on < today %}<tr>
+        <td class="mono">{{ cc.control_identifier }}</td>
+        <td>{{ system_name }}</td>
+        <td><strong>{{ cc.measure }}</strong><div class="dim clamp-3">{{ cc.rationale }}</div></td>
+        <td><span class="chip {% if cc.status == 'approved' %}chip--warn{% elif cc.status == 'rejected' %}chip--err{% else %}chip--ghost{% endif %}">{{ cc.status }}</span></td>
+        <td>{{ cc.proposed_by or '—' }}</td>
+        <td>{{ cc.decided_by or '—' }}{% if cc.decided_at %}<div class="dim">{{ cc.decided_at.strftime('%Y-%m-%d') }}</div>{% endif %}</td>
+        <td>{% if cc.expires_on %}<span class="{% if lapsed %}kanban__due--late{% endif %}">{{ cc.expires_on }}{% if lapsed %} · lapsed{% endif %}</span>{% else %}<span class="dim">no expiry</span>{% endif %}</td>
+        <td>
+          {% if cc.status == 'proposed' %}
+            {% if me and cc.proposed_by and me | lower == cc.proposed_by | lower %}
+            <span class="dim">awaiting another administrator</span>
+            {% else %}
+            <div class="row">
+              <form method="post" action="/compensating-controls/{{ cc.id }}/approve"><button class="btn btn--secondary btn--sm" type="submit">Approve</button></form>
+              <form method="post" action="/compensating-controls/{{ cc.id }}/reject"><button class="btn btn--ghost btn--sm" type="submit">Reject</button></form>
+            </div>
+            {% endif %}
+          {% elif cc.status == 'approved' %}
+          <form method="post" action="/compensating-controls/{{ cc.id }}/retire"><button class="btn btn--ghost btn--sm" type="submit">Retire</button></form>
+          {% endif %}
+        </td>
+      </tr>{% endfor %}</tbody>
+    </table></div>
+    {% else %}
+    <div class="card empty-state"><i data-lucide="shield-half"></i><h2>No compensating controls</h2><p>No substitute measure has been proposed for this organization's systems. Propose the first with the form beside this list, naming the control it stands in for.</p></div>
+    {% endif %}
+  </div>
+
+  <form method="post" action="/compensating-controls" class="card">
+    <div class="card__header"><div class="card__title">Propose a compensating control</div></div>
+    <div class="card__body stack">
+      {% if systems %}
+      <label class="field-group"><span class="label">System *</span>
+        <select class="select" name="system_id" required>{% for s in systems %}<option value="{{ s.id }}">{{ s.name }}</option>{% endfor %}</select></label>
+      <label class="field-group"><span class="label">Control it compensates for *</span><input class="input" name="control_identifier" required placeholder="e.g. IA-2(1)"></label>
+      <label class="field-group"><span class="label">Measure *</span><textarea class="input" name="measure" rows="3" required></textarea></label>
+      <label class="field-group"><span class="label">Rationale *</span><textarea class="input" name="rationale" rows="3" required></textarea></label>
+      <label class="field-group"><span class="label">Expires on</span><input class="input" type="date" name="expires_on"></label>
+      <button class="btn btn--primary" type="submit"><i data-lucide="plus"></i> Propose</button>
+      {% else %}
+      <p class="dim">A compensating control belongs to a system. <a href="/systems">Add a system</a> first.</p>
+      {% endif %}
+    </div>
+  </form>
+</div>
+{% endblock %}

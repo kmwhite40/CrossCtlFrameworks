@@ -1,0 +1,1324 @@
+{
+ "meta": {
+  "last_change": "2026-10-14T02:27:37.264Z",
+  "produced_by": "General Services Administration"
+ },
+ "data": {
+  "Metrics": {
+   "ready": 68,
+   "in_process": 13,
+   "total": 533,
+   "latest": [
+    {
+     "id": "FR2518943913",
+     "logo": "https://www.fedramp.gov/assets/img/logos/CSP_logos/SentiLink%20Logo.png",
+     "cso": "SentiLink",
+     "date": "2026-09-18T20:00:00.000Z",
+     "status": "Now Authorized"
+    },
+    {
+     "id": "FR2610538972",
+     "logo": "https://www.fedramp.gov/assets/img/logos/CSP_logos/Bizzdesign%20Logo.png",
+     "cso": "Bizzdesign GovCloud",
+     "date": "2026-09-01T20:00:00.000Z",
+     "status": "Now Authorized"
+    },
+    {
+     "id": "FR2600545894",
+     "logo": "https://www.fedramp.gov/assets/img/logos/CSP_logos/Butterfly%20Logo.png",
+     "cso": "Butterfly Network Ultrasound",
+     "date": "2026-08-26T20:00:00.000Z",
+     "status": "Now Authorized"
+    }
+   ]
+  },
+  "Filters": {
+   "product": {
+    "status": [
+     {
+      "name": "Agency In Process",
+      "class_name": "filter-status-Agency-In-Process"
+     },
+     {
+      "name": "FedRAMP Authorized",
+      "class_name": "filter-status-FedRAMP-Authorized"
+     },
+     {
+      "name": "FedRAMP In Process",
+      "class_name": "filter-status-FedRAMP-In-Process"
+     },
+     {
+      "name": "FedRAMP Ready",
+      "class_name": "filter-status-FedRAMP-Ready"
+     }
+    ],
+    "business_function": [
+     {
+      "name": "Accounting",
+      "class_name": "filter-business-function-Accounting"
+     },
+     {
+      "name": "Analytics",
+      "class_name": "filter-business-function-Analytics"
+     },
+     {
+      "name": "Artificial Intelligence (AI)",
+      "class_name": "filter-business-function-Artificial-Intelligence-AI-"
+     },
+     {
+      "name": "Collaboration",
+      "class_name": "filter-business-function-Collaboration"
+     },
+     {
+      "name": "Communication",
+      "class_name": "filter-business-function-Communication"
+     },
+     {
+      "name": "Construction",
+      "class_name": "filter-business-function-Construction"
+     },
+     {
+      "name": "Contact Center",
+      "class_name": "filter-business-function-Contact-Center"
+     },
+     {
+      "name": "Content Management System (CMS)",
+      "class_name": "filter-business-function-Content-Management-System-CMS-"
+     },
+     {
+      "name": "Customer Relations Management (CRM)",
+      "class_name": "filter-business-function-Customer-Relations-Management-CRM-"
+     },
+     {
+      "name": "Customer Service",
+      "class_name": "filter-business-function-Customer-Service"
+     },
+     {
+      "name": "Cybersecurity & Risk Management",
+      "class_name": "filter-business-function-Cybersecurity-Risk-Management"
+     },
+     {
+      "name": "Data Management",
+      "class_name": "filter-business-function-Data-Management"
+     },
+     {
+      "name": "Design & Multimedia",
+      "class_name": "filter-business-function-Design-Multimedia"
+     },
+     {
+      "name": "Development Tools",
+      "class_name": "filter-business-function-Development-Tools"
+     },
+     {
+      "name": "Education & Training",
+      "class_name": "filter-business-function-Education-Training"
+     },
+     {
+      "name": "Finance",
+      "class_name": "filter-business-function-Finance"
+     },
+     {
+      "name": "Fleet Management",
+      "class_name": "filter-business-function-Fleet-Management"
+     },
+     {
+      "name": "Governance, Risk, and Compliance (GRC)",
+      "class_name": "filter-business-function-Governance-Risk-and-Compliance-GRC-"
+     },
+     {
+      "name": "Grant Management",
+      "class_name": "filter-business-function-Grant-Management"
+     },
+     {
+      "name": "Health & Wellness",
+      "class_name": "filter-business-function-Health-Wellness"
+     },
+     {
+      "name": "Human Resources",
+      "class_name": "filter-business-function-Human-Resources"
+     },
+     {
+      "name": "Law Enforcement",
+      "class_name": "filter-business-function-Law-Enforcement"
+     },
+     {
+      "name": "Learning Management",
+      "class_name": "filter-business-function-Learning-Management"
+     },
+     {
+      "name": "Legal & Policy",
+      "class_name": "filter-business-function-Legal-Policy"
+     },
+     {
+      "name": "Marketing & Sales",
+      "class_name": "filter-business-function-Marketing-Sales"
+     },
+     {
+      "name": "Media",
+      "class_name": "filter-business-function-Media"
+     },
+     {
+      "name": "Mobile Device Management (MDM)",
+      "class_name": "filter-business-function-Mobile-Device-Management-MDM-"
+     },
+     {
+      "name": "Network Management",
+      "class_name": "filter-business-function-Network-Management"
+     },
+     {
+      "name": "Operations Management",
+      "class_name": "filter-business-function-Operations-Management"
+     },
+     {
+      "name": "Research",
+      "class_name": "filter-business-function-Research"
+     },
+     {
+      "name": "Storage",
+      "class_name": "filter-business-function-Storage"
+     },
+     {
+      "name": "System Administration",
+      "class_name": "filter-business-function-System-Administration"
+     },
+     {
+      "name": "Talent Development",
+      "class_name": "filter-business-function-Talent-Development"
+     },
+     {
+      "name": "Talent Management",
+      "class_name": "filter-business-function-Talent-Management"
+     },
+     {
+      "name": "Travel Management",
+      "class_name": "filter-business-function-Travel-Management"
+     },
+     {
+      "name": "Virtual Private Network (VPN)",
+      "class_name": "filter-business-function-Virtual-Private-Network-VPN-"
+     }
+    ],
+    "service_model": [
+     {
+      "name": "IaaS",
+      "class_name": "filter-service-model-IaaS"
+     },
+     {
+      "name": "PaaS",
+      "class_name": "filter-service-model-PaaS"
+     },
+     {
+      "name": "SaaS",
+      "class_name": "filter-service-model-SaaS"
+     }
+    ],
+    "impact_level": [
+     {
+      "name": "20x Low",
+      "class_name": "filter-impact-level-20x-Low"
+     },
+     {
+      "name": "20x Moderate",
+      "class_name": "filter-impact-level-20x-Moderate"
+     },
+     {
+      "name": "LI-SaaS",
+      "class_name": "filter-impact-level-LI-SaaS"
+     },
+     {
+      "name": "Low",
+      "class_name": "filter-impact-level-Low"
+     },
+     {
+      "name": "Moderate",
+      "class_name": "filter-impact-level-Moderate"
+     },
+     {
+      "name": "High",
+      "class_name": "filter-impact-level-High"
+     }
+    ],
+    "auth_type": [
+     {
+      "name": "Agency",
+      "class_name": "filter-auth-type-Agency"
+     },
+     {
+      "name": "JAB",
+      "class_name": "filter-auth-type-JAB"
+     }
+    ],
+    "deployment_models": [
+     {
+      "name": "Government Community Cloud",
+      "class_name": "filter-deployment-model-Government-Community-Cloud"
+     },
+     {
+      "name": "Hybrid Cloud",
+      "class_name": "filter-deployment-model-Hybrid-Cloud"
+     },
+     {
+      "name": "Public Cloud",
+      "class_name": "filter-deployment-model-Public-Cloud"
+     }
+    ],
+    "small_business": [],
+    "assessor": [
+     {
+      "name": "360 Advanced Compass Rose",
+      "class_name": "filter-assessor-360-Advanced-Compass-Rose"
+     },
+     {
+      "name": "A-LIGN Compliance and Security, Inc. dba A-LIGN",
+      "class_name": "filter-assessor-A-LIGN-Compliance-and-Security-Inc-dba-A-LIGN"
+     },
+     {
+      "name": "Baker Tilly",
+      "class_name": "filter-assessor-Baker-Tilly"
+     },
+     {
+      "name": "Booz Allen Hamilton",
+      "class_name": "filter-assessor-Booz-Allen-Hamilton"
+     },
+     {
+      "name": "Coalfire Systems, Inc.",
+      "class_name": "filter-assessor-Coalfire-Systems-Inc-"
+     },
+     {
+      "name": "ControlCase",
+      "class_name": "filter-assessor-ControlCase"
+     },
+     {
+      "name": "Currently contracted with a non-FedRAMP recognized 3PAO",
+      "class_name": "filter-assessor-Currently-contracted-with-a-non-FedRAMP-recognized-3PAO"
+     },
+     {
+      "name": "DataLock Consulting Group",
+      "class_name": "filter-assessor-DataLock-Consulting-Group"
+     },
+     {
+      "name": "Deloitte & Touche LLP",
+      "class_name": "filter-assessor-Deloitte-Touche-LLP"
+     },
+     {
+      "name": "Emagine IT",
+      "class_name": "filter-assessor-Emagine-IT"
+     },
+     {
+      "name": "Excentium, Inc.",
+      "class_name": "filter-assessor-Excentium-Inc-"
+     },
+     {
+      "name": "Federal Risk and Authorization Management Program",
+      "class_name": "filter-assessor-Federal-Risk-and-Authorization-Management-Program"
+     },
+     {
+      "name": "First Information Technology Services, Inc.",
+      "class_name": "filter-assessor-First-Information-Technology-Services-Inc-"
+     },
+     {
+      "name": "Fortreum, LLC",
+      "class_name": "filter-assessor-Fortreum-LLC"
+     },
+     {
+      "name": "Ignyte Platform Inc.",
+      "class_name": "filter-assessor-Ignyte-Platform-Inc-"
+     },
+     {
+      "name": "Information Technology Company, LLC",
+      "class_name": "filter-assessor-Information-Technology-Company-LLC"
+     },
+     {
+      "name": "Kompleye",
+      "class_name": "filter-assessor-Kompleye"
+     },
+     {
+      "name": "Kratos",
+      "class_name": "filter-assessor-Kratos"
+     },
+     {
+      "name": "Lazarus Alliance, Inc.",
+      "class_name": "filter-assessor-Lazarus-Alliance-Inc-"
+     },
+     {
+      "name": "Linford & Company",
+      "class_name": "filter-assessor-Linford-Company"
+     },
+     {
+      "name": "Lunarline, Inc.",
+      "class_name": "filter-assessor-Lunarline-Inc-"
+     },
+     {
+      "name": "MegaplanIT Holdings, LLC",
+      "class_name": "filter-assessor-MegaplanIT-Holdings-LLC"
+     },
+     {
+      "name": "MindPoint Group, A Tyto Athene Company",
+      "class_name": "filter-assessor-MindPoint-Group-A-Tyto-Athene-Company"
+     },
+     {
+      "name": "NCC Group Security Services, Inc.",
+      "class_name": "filter-assessor-NCC-Group-Security-Services-Inc-"
+     },
+     {
+      "name": "Prescient Security, LLC.",
+      "class_name": "filter-assessor-Prescient-Security-LLC-"
+     },
+     {
+      "name": "RISC Point",
+      "class_name": "filter-assessor-RISC-Point"
+     },
+     {
+      "name": "Schellman Compliance, LLC",
+      "class_name": "filter-assessor-Schellman-Compliance-LLC"
+     },
+     {
+      "name": "SecureIT",
+      "class_name": "filter-assessor-SecureIT"
+     },
+     {
+      "name": "Securisea, Inc.",
+      "class_name": "filter-assessor-Securisea-Inc-"
+     },
+     {
+      "name": "Sentar, Inc.",
+      "class_name": "filter-assessor-Sentar-Inc-"
+     },
+     {
+      "name": "Sera Brynn, LLC",
+      "class_name": "filter-assessor-Sera-Brynn-LLC"
+     },
+     {
+      "name": "SteelToad",
+      "class_name": "filter-assessor-SteelToad"
+     },
+     {
+      "name": "Tevora Business Solutions, Inc.",
+      "class_name": "filter-assessor-Tevora-Business-Solutions-Inc-"
+     },
+     {
+      "name": "Vaultes",
+      "class_name": "filter-assessor-Vaultes"
+     }
+    ]
+   },
+   "agency": {
+    "parent_agency": [
+     {
+      "name": "Administrative Office of the United States Courts",
+      "class_name": "filter-parent-agency-Administrative-Office-of-the-United-States-Courts"
+     },
+     {
+      "name": "Advisory Council on Historic Preservation",
+      "class_name": "filter-parent-agency-Advisory-Council-on-Historic-Preservation"
+     },
+     {
+      "name": "American Battle Monuments Commission",
+      "class_name": "filter-parent-agency-American-Battle-Monuments-Commission"
+     },
+     {
+      "name": "Chemical Safety And Hazard Investigation Board",
+      "class_name": "filter-parent-agency-Chemical-Safety-And-Hazard-Investigation-Board"
+     },
+     {
+      "name": "Commission of Fine Arts",
+      "class_name": "filter-parent-agency-Commission-of-Fine-Arts"
+     },
+     {
+      "name": "Commodity Futures Trading Commission",
+      "class_name": "filter-parent-agency-Commodity-Futures-Trading-Commission"
+     },
+     {
+      "name": "Consumer Financial Protection Bureau",
+      "class_name": "filter-parent-agency-Consumer-Financial-Protection-Bureau"
+     },
+     {
+      "name": "Consumer Product Safety Commission",
+      "class_name": "filter-parent-agency-Consumer-Product-Safety-Commission"
+     },
+     {
+      "name": "Corporation for National & Community Service",
+      "class_name": "filter-parent-agency-Corporation-for-National-Community-Service"
+     },
+     {
+      "name": "Council of the Inspectors General on Integrity and Efficiency",
+      "class_name": "filter-parent-agency-Council-of-the-Inspectors-General-on-Integrity-and-Efficiency"
+     },
+     {
+      "name": "Court Services and Offender Supervision Agency",
+      "class_name": "filter-parent-agency-Court-Services-and-Offender-Supervision-Agency"
+     },
+     {
+      "name": "Defense Nuclear Facilities Safety Board",
+      "class_name": "filter-parent-agency-Defense-Nuclear-Facilities-Safety-Board"
+     },
+     {
+      "name": "Department of Agriculture",
+      "class_name": "filter-parent-agency-Department-of-Agriculture"
+     },
+     {
+      "name": "Department of Commerce",
+      "class_name": "filter-parent-agency-Department-of-Commerce"
+     },
+     {
+      "name": "Department of Defense",
+      "class_name": "filter-parent-agency-Department-of-Defense"
+     },
+     {
+      "name": "Department of Education",
+      "class_name": "filter-parent-agency-Department-of-Education"
+     },
+     {
+      "name": "Department of Energy",
+      "class_name": "filter-parent-agency-Department-of-Energy"
+     },
+     {
+      "name": "Department of Health and Human Services",
+      "class_name": "filter-parent-agency-Department-of-Health-and-Human-Services"
+     },
+     {
+      "name": "Department of Homeland Security",
+      "class_name": "filter-parent-agency-Department-of-Homeland-Security"
+     },
+     {
+      "name": "Department of Housing and Urban Development",
+      "class_name": "filter-parent-agency-Department-of-Housing-and-Urban-Development"
+     },
+     {
+      "name": "Department of Justice",
+      "class_name": "filter-parent-agency-Department-of-Justice"
+     },
+     {
+      "name": "Department of Labor",
+      "class_name": "filter-parent-agency-Department-of-Labor"
+     },
+     {
+      "name": "Department of State",
+      "class_name": "filter-parent-agency-Department-of-State"
+     },
+     {
+      "name": "Department of Transportation",
+      "class_name": "filter-parent-agency-Department-of-Transportation"
+     },
+     {
+      "name": "Department of Veterans Affairs",
+      "class_name": "filter-parent-agency-Department-of-Veterans-Affairs"
+     },
+     {
+      "name": "Department of the Interior",
+      "class_name": "filter-parent-agency-Department-of-the-Interior"
+     },
+     {
+      "name": "Department of the Treasury",
+      "class_name": "filter-parent-agency-Department-of-the-Treasury"
+     },
+     {
+      "name": "Environmental Protection Agency",
+      "class_name": "filter-parent-agency-Environmental-Protection-Agency"
+     },
+     {
+      "name": "Executive Office of the President",
+      "class_name": "filter-parent-agency-Executive-Office-of-the-President"
+     },
+     {
+      "name": "Export-Import Bank of the United States",
+      "class_name": "filter-parent-agency-Export-Import-Bank-of-the-United-States"
+     },
+     {
+      "name": "Farm Credit Administration",
+      "class_name": "filter-parent-agency-Farm-Credit-Administration"
+     },
+     {
+      "name": "Federal Communications Commission",
+      "class_name": "filter-parent-agency-Federal-Communications-Commission"
+     },
+     {
+      "name": "Federal Deposit Insurance Corporation",
+      "class_name": "filter-parent-agency-Federal-Deposit-Insurance-Corporation"
+     },
+     {
+      "name": "Federal Election Commission",
+      "class_name": "filter-parent-agency-Federal-Election-Commission"
+     },
+     {
+      "name": "Federal Housing Finance Agency",
+      "class_name": "filter-parent-agency-Federal-Housing-Finance-Agency"
+     },
+     {
+      "name": "Federal Judicial Centers",
+      "class_name": "filter-parent-agency-Federal-Judicial-Centers"
+     },
+     {
+      "name": "Federal Maritime Commission",
+      "class_name": "filter-parent-agency-Federal-Maritime-Commission"
+     },
+     {
+      "name": "Federal Mediation & Conciliation Service",
+      "class_name": "filter-parent-agency-Federal-Mediation-Conciliation-Service"
+     },
+     {
+      "name": "Federal Mine Safety and Health Review Commission",
+      "class_name": "filter-parent-agency-Federal-Mine-Safety-and-Health-Review-Commission"
+     },
+     {
+      "name": "Federal Reserve System",
+      "class_name": "filter-parent-agency-Federal-Reserve-System"
+     },
+     {
+      "name": "Federal Retirement Thrift Investment Board",
+      "class_name": "filter-parent-agency-Federal-Retirement-Thrift-Investment-Board"
+     },
+     {
+      "name": "Federal Risk and Authorization Management Program",
+      "class_name": "filter-parent-agency-Federal-Risk-and-Authorization-Management-Program"
+     },
+     {
+      "name": "Federal Trade Commission",
+      "class_name": "filter-parent-agency-Federal-Trade-Commission"
+     },
+     {
+      "name": "General Services Administration",
+      "class_name": "filter-parent-agency-General-Services-Administration"
+     },
+     {
+      "name": "Government Accountability Office",
+      "class_name": "filter-parent-agency-Government-Accountability-Office"
+     },
+     {
+      "name": "Gulf Coast Ecosystem Restoration Council",
+      "class_name": "filter-parent-agency-Gulf-Coast-Ecosystem-Restoration-Council"
+     },
+     {
+      "name": "Institute of Museum and Library Services",
+      "class_name": "filter-parent-agency-Institute-of-Museum-and-Library-Services"
+     },
+     {
+      "name": "Legacy JAB Authorization",
+      "class_name": "filter-parent-agency-Legacy-JAB-Authorization"
+     },
+     {
+      "name": "Library of Congress",
+      "class_name": "filter-parent-agency-Library-of-Congress"
+     },
+     {
+      "name": "Marine Mammal Commission",
+      "class_name": "filter-parent-agency-Marine-Mammal-Commission"
+     },
+     {
+      "name": "Merit Systems Protection Board",
+      "class_name": "filter-parent-agency-Merit-Systems-Protection-Board"
+     },
+     {
+      "name": "Millennium Challenge Corporation",
+      "class_name": "filter-parent-agency-Millennium-Challenge-Corporation"
+     },
+     {
+      "name": "Morris K. Udall and Stewart L. Udall Foundation",
+      "class_name": "filter-parent-agency-Morris-K-Udall-and-Stewart-L-Udall-Foundation"
+     },
+     {
+      "name": "National Aeronautics and Space Administration",
+      "class_name": "filter-parent-agency-National-Aeronautics-and-Space-Administration"
+     },
+     {
+      "name": "National Archives and Records Administration",
+      "class_name": "filter-parent-agency-National-Archives-and-Records-Administration"
+     },
+     {
+      "name": "National Capital Planning Commission",
+      "class_name": "filter-parent-agency-National-Capital-Planning-Commission"
+     },
+     {
+      "name": "National Credit Union Administration",
+      "class_name": "filter-parent-agency-National-Credit-Union-Administration"
+     },
+     {
+      "name": "National Endowment for the Arts",
+      "class_name": "filter-parent-agency-National-Endowment-for-the-Arts"
+     },
+     {
+      "name": "National Endowment for the Humanities",
+      "class_name": "filter-parent-agency-National-Endowment-for-the-Humanities"
+     },
+     {
+      "name": "National Gallery of Art",
+      "class_name": "filter-parent-agency-National-Gallery-of-Art"
+     },
+     {
+      "name": "National Guard Bureau",
+      "class_name": "filter-parent-agency-National-Guard-Bureau"
+     },
+     {
+      "name": "National Labor Relations Board",
+      "class_name": "filter-parent-agency-National-Labor-Relations-Board"
+     },
+     {
+      "name": "National Mediation Board",
+      "class_name": "filter-parent-agency-National-Mediation-Board"
+     },
+     {
+      "name": "National Science Foundation",
+      "class_name": "filter-parent-agency-National-Science-Foundation"
+     },
+     {
+      "name": "National Transportation Safety Board",
+      "class_name": "filter-parent-agency-National-Transportation-Safety-Board"
+     },
+     {
+      "name": "Nuclear Regulatory Commission",
+      "class_name": "filter-parent-agency-Nuclear-Regulatory-Commission"
+     },
+     {
+      "name": "Office of Navajo and Hopi Indian Relocation",
+      "class_name": "filter-parent-agency-Office-of-Navajo-and-Hopi-Indian-Relocation"
+     },
+     {
+      "name": "Office of Personnel Management",
+      "class_name": "filter-parent-agency-Office-of-Personnel-Management"
+     },
+     {
+      "name": "Other Federal Entity",
+      "class_name": "filter-parent-agency-Other-Federal-Entity"
+     },
+     {
+      "name": "Peace Corps",
+      "class_name": "filter-parent-agency-Peace-Corps"
+     },
+     {
+      "name": "Pension Benefit Guaranty Corporation",
+      "class_name": "filter-parent-agency-Pension-Benefit-Guaranty-Corporation"
+     },
+     {
+      "name": "Postal Regulatory Commission",
+      "class_name": "filter-parent-agency-Postal-Regulatory-Commission"
+     },
+     {
+      "name": "Presidio Trust",
+      "class_name": "filter-parent-agency-Presidio-Trust"
+     },
+     {
+      "name": "Pretrial Services Agency",
+      "class_name": "filter-parent-agency-Pretrial-Services-Agency"
+     },
+     {
+      "name": "Railroad Retirement Board",
+      "class_name": "filter-parent-agency-Railroad-Retirement-Board"
+     },
+     {
+      "name": "Small Business Administration",
+      "class_name": "filter-parent-agency-Small-Business-Administration"
+     },
+     {
+      "name": "Smithsonian Institution",
+      "class_name": "filter-parent-agency-Smithsonian-Institution"
+     },
+     {
+      "name": "Social Security Administration",
+      "class_name": "filter-parent-agency-Social-Security-Administration"
+     },
+     {
+      "name": "Surface Transportation Board",
+      "class_name": "filter-parent-agency-Surface-Transportation-Board"
+     },
+     {
+      "name": "Tennessee Valley Authority",
+      "class_name": "filter-parent-agency-Tennessee-Valley-Authority"
+     },
+     {
+      "name": "U.S. AbilityOne Commission",
+      "class_name": "filter-parent-agency-U-S-AbilityOne-Commission"
+     },
+     {
+      "name": "U.S. Commission for the Preservation of America's Heritage Abroad",
+      "class_name": "filter-parent-agency-U-S-Commission-for-the-Preservation-of-America-s-Heritage-Abroad"
+     },
+     {
+      "name": "U.S. Election Assistance Commission",
+      "class_name": "filter-parent-agency-U-S-Election-Assistance-Commission"
+     },
+     {
+      "name": "U.S. International Development Finance Corporation",
+      "class_name": "filter-parent-agency-U-S-International-Development-Finance-Corporation"
+     },
+     {
+      "name": "U.S. Office of Special Counsel",
+      "class_name": "filter-parent-agency-U-S-Office-of-Special-Counsel"
+     },
+     {
+      "name": "United States Access Board",
+      "class_name": "filter-parent-agency-United-States-Access-Board"
+     },
+     {
+      "name": "United States Agency for Global Media",
+      "class_name": "filter-parent-agency-United-States-Agency-for-Global-Media"
+     },
+     {
+      "name": "United States Agency for International Development",
+      "class_name": "filter-parent-agency-United-States-Agency-for-International-Development"
+     },
+     {
+      "name": "United States Capitol Police",
+      "class_name": "filter-parent-agency-United-States-Capitol-Police"
+     },
+     {
+      "name": "United States Commission on Civil Rights",
+      "class_name": "filter-parent-agency-United-States-Commission-on-Civil-Rights"
+     },
+     {
+      "name": "United States Equal Employment Opportunity Commission",
+      "class_name": "filter-parent-agency-United-States-Equal-Employment-Opportunity-Commission"
+     },
+     {
+      "name": "United States Government Publishing Office",
+      "class_name": "filter-parent-agency-United-States-Government-Publishing-Office"
+     },
+     {
+      "name": "United States House of Representatives",
+      "class_name": "filter-parent-agency-United-States-House-of-Representatives"
+     },
+     {
+      "name": "United States International Trade Commission",
+      "class_name": "filter-parent-agency-United-States-International-Trade-Commission"
+     },
+     {
+      "name": "United States Office of Government Ethics",
+      "class_name": "filter-parent-agency-United-States-Office-of-Government-Ethics"
+     },
+     {
+      "name": "United States Postal Service",
+      "class_name": "filter-parent-agency-United-States-Postal-Service"
+     },
+     {
+      "name": "United States Securities and Exchange Commission",
+      "class_name": "filter-parent-agency-United-States-Securities-and-Exchange-Commission"
+     },
+     {
+      "name": "United States Senate",
+      "class_name": "filter-parent-agency-United-States-Senate"
+     },
+     {
+      "name": "United States Trade and Development Agency",
+      "class_name": "filter-parent-agency-United-States-Trade-and-Development-Agency"
+     },
+     {
+      "name": "Universal Service Administrative Company",
+      "class_name": "filter-parent-agency-Universal-Service-Administrative-Company"
+     }
+    ],
+    "authorization": [
+     {
+      "name": "0-5",
+      "class_name": "filter-authorization-1"
+     },
+     {
+      "name": "6-10",
+      "class_name": "filter-authorization-2"
+     },
+     {
+      "name": "11-20",
+      "class_name": "filter-authorization-3"
+     },
+     {
+      "name": "21+",
+      "class_name": "filter-authorization-4"
+     }
+    ],
+    "reuse": [
+     {
+      "name": "0-5",
+      "class_name": "filter-reuse-1"
+     },
+     {
+      "name": "6-10",
+      "class_name": "filter-reuse-2"
+     },
+     {
+      "name": "11-20",
+      "class_name": "filter-reuse-3"
+     },
+     {
+      "name": "21+",
+      "class_name": "filter-reuse-4"
+     }
+    ],
+    "impact_level": [
+     {
+      "name": "20x Low",
+      "class_name": "filter-impact-level-20x-Low"
+     },
+     {
+      "name": "20x Moderate",
+      "class_name": "filter-impact-level-20x-Moderate"
+     },
+     {
+      "name": "LI-SaaS",
+      "class_name": "filter-impact-level-LI-SaaS"
+     },
+     {
+      "name": "Low",
+      "class_name": "filter-impact-level-Low"
+     },
+     {
+      "name": "Moderate",
+      "class_name": "filter-impact-level-Moderate"
+     },
+     {
+      "name": "High",
+      "class_name": "filter-impact-level-High"
+     }
+    ]
+   },
+   "assessor": {
+    "product_assessing": [
+     {
+      "name": "0-5",
+      "class_name": "filter-products-assessing-1"
+     },
+     {
+      "name": "6-10",
+      "class_name": "filter-products-assessing-2"
+     },
+     {
+      "name": "11-20",
+      "class_name": "filter-products-assessing-3"
+     },
+     {
+      "name": "21+",
+      "class_name": "filter-products-assessing-4"
+     }
+    ],
+    "impact_level": [
+     {
+      "name": "20x Low",
+      "class_name": "filter-impact-level-20x-Low"
+     },
+     {
+      "name": "20x Moderate",
+      "class_name": "filter-impact-level-20x-Moderate"
+     },
+     {
+      "name": "LI-SaaS",
+      "class_name": "filter-impact-level-LI-SaaS"
+     },
+     {
+      "name": "Low",
+      "class_name": "filter-impact-level-Low"
+     },
+     {
+      "name": "Moderate",
+      "class_name": "filter-impact-level-Moderate"
+     },
+     {
+      "name": "High",
+      "class_name": "filter-impact-level-High"
+     }
+    ],
+    "status": [
+     {
+      "name": "Agency In Process",
+      "class_name": "filter-status-Agency-In-Process"
+     },
+     {
+      "name": "FedRAMP Authorized",
+      "class_name": "filter-status-FedRAMP-Authorized"
+     },
+     {
+      "name": "FedRAMP In Process",
+      "class_name": "filter-status-FedRAMP-In-Process"
+     },
+     {
+      "name": "FedRAMP Ready",
+      "class_name": "filter-status-FedRAMP-Ready"
+     }
+    ]
+   }
+  },
+  "Products": [
+   {
+    "id": "F1607067912",
+    "name": "18F - 18F Cloud.gov",
+    "csp": "18F - 18F Cloud.gov",
+    "cso": "CG-TTS - Cloud.Gov",
+    "logo": "https://www.fedramp.gov/assets/img/logos/CSP_logos/Cloud.gov%20Logo.png",
+    "service_offering": "CG-TTS - Cloud.Gov",
+    "status": "FedRAMP Authorized",
+    "authorization": 19,
+    "reuse": 18,
+    "ready_status": "Not Active",
+    "ready_date": "2016-05-20T20:00:00.000Z",
+    "ip_jab_status": "Not Active",
+    "ip_jab_date": "2016-08-09T20:00:00.000Z",
+    "ip_prog_status": "Not Active",
+    "ip_prog_date": "Not Active",
+    "ip_prog_date2": "Not Active",
+    "ip_agency_status": "Not Active",
+    "ip_agency_date": "Not Active",
+    "ip_pmo_status": "Not Active",
+    "ip_pmo_date": "Not In Process",
+    "auth_date": "2017-02-02T20:00:00.000Z",
+    "auth_type": "JAB",
+    "fedramp_ready": "2016-05-20T20:00:00.000Z",
+    "partnering_agency": "Not In Process",
+    "fedramp_auth": "2017-02-02T20:00:00.000Z",
+    "annual_assessment": "01/18",
+    "independent_assessor": "Lunarline, Inc.",
+    "service_model": [
+     "PaaS"
+    ],
+    "deployment_model": "Government Community Cloud",
+    "impact_level": "Moderate",
+    "impact_level_number": "5",
+    "leveraged_systems": [],
+    "agency_authorizations": [
+     "Administration for Children & Families",
+     "Alcohol and Tobacco Tax and Trade Bureau",
+     "Bureau of Alcohol, Tobacco, Firearms and Explosives",
+     "Cybersecurity & Infrastructure Security Agency",
+     "Defense Information Systems Agency",
+     "Department of Health and Human Services",
+     "Department of Labor",
+     "Environmental Protection Agency",
+     "Federal Deposit Insurance Corporation",
+     "Federal Election Commission",
+     "Federal Retirement Thrift Investment Board",
+     "General Services Administration",
+     "Library of Congress",
+     "Millennium Challenge Corporation",
+     "National Science Foundation",
+     "Office of Natural Resources Revenue",
+     "Office of Personnel Management",
+     "Social Security Administration",
+     "United States Trade and Development Agency"
+    ],
+    "agency_reuse": [
+     ""
+    ],
+    "service_desc": "Cloud.gov is designed and operated by US government workers, for US government work. Cloud.gov reduces the barriers to rapid, incremental, compliant, secure, and scalable delivery of government services by all government agencies, leveraging best-of-breed modern practices. Cloud.gov provides a Platform-as-a-Service (PaaS) based on Cloud Foundry, enabling instant provisioning of services and environments, easy deployment of applications, and rapid scaling to match demand. Cloud.gov includes tools to quickly incorporate 800-53 NIST control documentation into easily-prepared and comprehensive System Security Plans (SSPs) for evaluation by local agency information security organizations or FedRAMP, reducing the time it takes for teams to gain Authority To Operate (ATO).",
+    "fedramp_msg": "CG-TTS - Cloud.Gov previously became FedRAMP-Authorized by the Joint Authorization Board (JAB).",
+    "sales_email": "inquiries@cloud.gov",
+    "security_email": "support@cloud.gov",
+    "website": "https://www.cloud.gov",
+    "uei": "",
+    "small_business": "No",
+    "business_function": [
+     ""
+    ],
+    "service_last_90": [
+     ""
+    ],
+    "all_others": [
+     ""
+    ],
+    "filter_classes": " filter-status-FedRAMP-Authorized filter-impact-level-Moderate filter-auth-type-JAB filter-deployment-model-Government-Community-Cloud filter-small-business-No filter-assessor-Lunarline-Inc- filter-service-model-PaaS filter-business-function-"
+   },
+   {
+    "id": "FR2617641654",
+    "name": "911inform",
+    "csp": "911inform",
+    "cso": "911inform",
+    "logo": "https://www.fedramp.gov/assets/img/logos/CSP_logos/911%20Logo.png",
+    "service_offering": "911inform",
+    "status": "Agency In Process",
+    "authorization": 0,
+    "reuse": 0,
+    "ready_status": "Not Active",
+    "ready_date": "No FRR Date",
+    "ip_jab_status": "Not Active",
+    "ip_jab_date": "Not Active",
+    "ip_prog_status": "Not Active",
+    "ip_prog_date": "Not Active",
+    "ip_prog_date2": "Not Active",
+    "ip_agency_status": "2026-03-27T20:00:00.000Z",
+    "ip_agency_date": "2026-03-27T20:00:00.000Z",
+    "ip_pmo_status": "Not Active",
+    "ip_pmo_date": "Not In Process",
+    "auth_date": "Not Active",
+    "auth_type": "Agency",
+    "fedramp_ready": "No FRR Date",
+    "partnering_agency": "",
+    "fedramp_auth": "Not Active",
+    "annual_assessment": "",
+    "independent_assessor": "Fortreum, LLC",
+    "service_model": [
+     "SaaS"
+    ],
+    "deployment_model": "Hybrid Cloud",
+    "impact_level": "Moderate",
+    "impact_level_number": "5",
+    "leveraged_systems": [],
+    "agency_authorizations": [
+     ""
+    ],
+    "agency_reuse": [
+     ""
+    ],
+    "service_desc": "911inform is a secure, cloud-based emergency response and situational intelligence platform designed for federal and enterprise environments requiring real-time visibility and coordinated response during critical incidents. Delivered within a FedRAMP-aligned SaaS architecture, the platform provides a centralized command-and-control interface for managing emergencies across facilities and agencies.\n\nAt its core is 911inform\u2019s patented Location Discovery Solution (LDS), a Ray Baum\u2019s Act-compliant technology that delivers precise, dynamic location data for 911 calls across PBX, softphone, and mobile devices. The platform enhances emergency response through patented interactive mapping, real-time cellular 9-1-1 call detection with location reporting, and automated multi-channel notifications.\n\n911inform enables secure communications and interoperability between organizations and first responders, delivering real-time situational intelligence to improve coordination and decision-making.\n\nDesigned for scalability and rapid deployment, 911inform integrates with existing telephony, security, and IT infrastructure while maintaining role-based access control, auditability, and secure data handling.\n\n \n\nSERVICES:\n\nRAY BAUM's Act Compliance\n\nKari\u2019s Law Compliance\n\nCellular 9-1-1 Call reporting\n\nInteractive mapping with routing\n\nNotification and messaging services\n\nFirst Responder Coordination\n\nEmergency Location Services",
+    "fedramp_msg": "",
+    "sales_email": "govsales@911inform.com",
+    "security_email": "security@911inform.com",
+    "website": "911inform.com",
+    "uei": "W2GGANP2APL9",
+    "small_business": "No",
+    "business_function": [
+     "Collaboration",
+     "Communication",
+     "Law Enforcement"
+    ],
+    "service_last_90": [
+     ""
+    ],
+    "all_others": [
+     ""
+    ],
+    "filter_classes": " filter-status-Agency-In-Process filter-impact-level-Moderate filter-auth-type-Agency filter-deployment-model-Hybrid-Cloud filter-small-business-No filter-assessor-Fortreum-LLC filter-service-model-SaaS filter-business-function-Collaboration filter-business-function-Communication filter-business-function-Law-Enforcement"
+   },
+   {
+    "id": "FR2616957286",
+    "name": "Adaptive Protocols, Inc. (Adaptiva)",
+    "csp": "Adaptive Protocols, Inc. (Adaptiva)",
+    "cso": "Adaptiva Onesite Platform",
+    "logo": "https://www.fedramp.gov/assets/img/logos/CSP_logos/Adaptiva%20Logo.png",
+    "service_offering": "Adaptiva Onesite Platform",
+    "status": "FedRAMP Ready",
+    "authorization": 0,
+    "reuse": 0,
+    "ready_status": "2026-04-14T20:00:00.000Z",
+    "ready_date": "2026-04-14T20:00:00.000Z",
+    "ip_jab_status": "Not Active",
+    "ip_jab_date": "Not Active",
+    "ip_prog_status": "Not Active",
+    "ip_prog_date": "Not Active",
+    "ip_prog_date2": "Not Active",
+    "ip_agency_status": "Not Active",
+    "ip_agency_date": "Not Active",
+    "ip_pmo_status": "Not Active",
+    "ip_pmo_date": "Not In Process",
+    "auth_date": "Not Active",
+    "auth_type": "Agency",
+    "fedramp_ready": "2026-04-14T20:00:00.000Z",
+    "partnering_agency": "",
+    "fedramp_auth": "Not Active",
+    "annual_assessment": "",
+    "independent_assessor": "Prescient Security, LLC.",
+    "service_model": [
+     "SaaS"
+    ],
+    "deployment_model": "Hybrid Cloud",
+    "impact_level": "Moderate",
+    "impact_level_number": "5",
+    "leveraged_systems": [],
+    "agency_authorizations": [
+     ""
+    ],
+    "agency_reuse": [
+     ""
+    ],
+    "service_desc": "The Adaptiva OneSite Platform enables its customers to autonomously manage the distribution of software and patches to endpoints across a customer\u2019s enterprise, within the customer network, or across the Internet. The OneSite Platform consists of four primary components:\n1)        A customer on-premises server operated and managed by customers that hosts an Adaptiva-developed OneSite application used to manage software distribution to the customer\u2019s endpoints.\n2)        A content delivery network (CDN) that enables customers to place software in the cloud for retrieval by managed customer endpoints across the Internet.\n3)        Adaptiva Cloud Services Relay Servers that receive messages from a customer\u2019s on-premises server and managed clients on the Internet. The relay servers facilitate communication between the customer server and the Internet-facing devices. \n4)        An Operations Manager (OpsMgr) server that is used by Adaptiva to manage OneSite cloud functionality and customer OneSite installation information.\nThe customer on-premises server provides functionality for the customer to manage the distribution of software to their endpoints. The server is owned and operated by the customer. Adaptiva support personnel do not have the ability to access or manage it. Software updates from Adaptiva are installed by the customer.\nThe Adaptiva OneSite Platform CDN is provided by Akamai, a FedRAMP-authorized Infrastructure-as-a-Service (IaaS) solution. The customer on-premises server running the OneSite application communicates with the CDN to upload the customer\u2019s software that is in-turn accessed by the customer\u2019s endpoints through commands conveyed by the relay server.\nThe relay server conveys command messages from a customer on-premises server to customer end points to direct the end points to download and install software. The relay server processes thousands of messages from on-premises servers to tens of thousands of customer endpoints. This server is hosted by DataBank, a FedRAMP-authorized IaaS and Platform-as-a-Service (PaaS) provider.\nAn OpsMgr server is used for activating customer servers to be allowed to use relays for internet clients to obtain metadata and keys. The OpsMgr also receives and stores the messaging statistics for customer server and end points from relay servers. This OpsMgr server is hosted by DataBank.\n",
+    "fedramp_msg": "",
+    "sales_email": "nick.healey@adaptiva.com",
+    "security_email": "vern.leblanc@adaptiva.com",
+    "website": "https://adaptiva.com",
+    "uei": "",
+    "small_business": "Yes",
+    "business_function": [
+     "Analytics",
+     "Cybersecurity & Risk Management",
+     "Mobile Device Management (MDM)",
+     "Network Management",
+     "System Administration"
+    ],
+    "service_last_90": [
+     ""
+    ],
+    "all_others": [
+     ""
+    ],
+    "filter_classes": " filter-status-FedRAMP-Ready filter-impact-level-Moderate filter-auth-type-Agency filter-deployment-model-Hybrid-Cloud filter-small-business-Yes filter-assessor-Prescient-Security-LLC- filter-service-model-SaaS filter-business-function-Analytics filter-business-function-Cybersecurity-Risk-Management filter-business-function-Mobile-Device-Management-MDM- filter-business-function-Network-Management filter-business-function-System-Administration"
+   },
+   {
+    "id": "FR2413241182",
+    "name": "Altana",
+    "csp": "Altana",
+    "cso": "Altana Product Network",
+    "logo": "https://www.fedramp.gov/assets/img/logos/CSP_logos/Altana%20Logo.png",
+    "service_offering": "Altana Product Network",
+    "status": "FedRAMP Authorized",
+    "authorization": 1,
+    "reuse": 0,
+    "ready_status": "Not Active",
+    "ready_date": "No FRR Date",
+    "ip_jab_status": "Not Active",
+    "ip_jab_date": "Not Active",
+    "ip_prog_status": "Not Active",
+    "ip_prog_date": "Not Active",
+    "ip_prog_date2": "Not Active",
+    "ip_agency_status": "Not Active",
+    "ip_agency_date": "2024-11-25T20:00:00.000Z",
+    "ip_pmo_status": "Not Active",
+    "ip_pmo_date": "2025-11-07T20:00:00.000Z",
+    "auth_date": "2026-02-05T20:00:00.000Z",
+    "auth_type": "Agency",
+    "fedramp_ready": "No FRR Date",
+    "partnering_agency": "United States Space Force",
+    "fedramp_auth": "2026-02-05T20:00:00.000Z",
+    "annual_assessment": "11/03",
+    "independent_assessor": "Schellman Compliance, LLC",
+    "service_model": [
+     "SaaS"
+    ],
+    "deployment_model": "Government Community Cloud",
+    "impact_level": "High",
+    "impact_level_number": "6",
+    "leveraged_systems": [],
+    "agency_authorizations": [
+     "United States Space Force"
+    ],
+    "agency_reuse": [
+     ""
+    ],
+    "service_desc": "Altana, the world\u2019s first Value Chain Management System (VCMS), is a common operating picture for the global supply chain, connecting the most important organizations across the public and private sectors into a shared source of truth.\n\nAltana enables government agencies and the defense industrial base to see their actual value chains situated within a dynamic map of the global supply chain, focus on their priorities with AI support, and act to master their global value chains:\n\n- National Security: Altana provides government agencies and the military industrial base with a dynamic, networked, common operating picture of the global supply chain.\n\n- Law Enforcement: Altana helps regulators and enforcement agencies enforce laws across global value chain networks, and engage the private sector constructively on compliance from a shared source of truth.\n\n- Customs Enforcement and Trade Facilitation: Altana enables customs authorities to illuminate, enforce, and facilitate compliant global value chains for goods crossing their borders.\n\n- Economic Security: Altana enables policymakers to see, simulate, and collaborate across global value chains ensuring the security of critical industries and resources.\n\nAltana\u2019s mission is to provide cutting-edge technology to deliver global-scale supply chain visibility, threat network visibility, federated customer data integration, and public-private engagement capabilities.",
+    "fedramp_msg": "N/A",
+    "sales_email": "federal@altana.ai",
+    "security_email": "security@altana.ai",
+    "website": "www.altana.ai",
+    "uei": "TRT5JBUD3WM1",
+    "small_business": "No",
+    "business_function": [
+     "Analytics",
+     "Collaboration",
+     "Cybersecurity & Risk Management",
+     "Data Management",
+     "Development Tools",
+     "Law Enforcement",
+     "Legal & Policy",
+     "Research"
+    ],
+    "service_last_90": [
+     ""
+    ],
+    "all_others": [
+     ""
+    ],
+    "filter_classes": " filter-status-FedRAMP-Authorized filter-impact-level-High filter-auth-type-Agency filter-deployment-model-Government-Community-Cloud filter-small-business-No filter-assessor-Schellman-Compliance-LLC filter-service-model-SaaS filter-business-function-Analytics filter-business-function-Collaboration filter-business-function-Cybersecurity-Risk-Management filter-business-function-Data-Management filter-business-function-Development-Tools filter-business-function-Law-Enforcement filter-business-function-Legal-Policy filter-business-function-Research"
+   }
+  ],
+  "Agencies": [
+   {
+    "id": "22-008",
+    "parent": "Administrative Office of the United States Courts",
+    "sub": "",
+    "csp": "Administrative Office of the United States Courts",
+    "logo": "",
+    "authorization": 4,
+    "reuse": 10,
+    "email": "N/A",
+    "website": "https://www.uscourts.gov/",
+    "auths": [
+     {
+      "id": "F1206061350",
+      "csp": "CGI Federal",
+      "cso": "CGI Federal IaaS Cloud",
+      "status": "FedRAMP Authorized",
+      "impact_level": "Moderate",
+      "impact_level_number": "5"
+     },
+     {
+      "id": "FR1728053006",
+      "csp": "IBM",
+      "cso": "IBM Automation Services for Government",
+      "status": "FedRAMP Authorized",
+      "impact_level": "Moderate",
+      "impact_level_number": "5"
+     },
+     {
+      "id": "F1603087869",
+      "csp": "Microsoft",
+      "cso": "Azure Government (includes Dynamics 365)",
+      "status": "FedRAMP Authorized",
+      "impact_level": "High",
+      "impact_level_number": "6"
+     },
+     {
+      "id": "FR1726564822",
+      "csp": "Workiva",
+      "cso": "Workiva Platform",
+      "status": "FedRAMP Authorized",
+      "impact_level": "Moderate",
+      "impact_level_number": "5"
+     }
+    ],
+    "reuses": [],
+    "procs": [],
+    "filter_classes": " filter-parent-agency-Administrative-Office-of-the-United-States-Courts filter-authorization-1 filter-reuse-2 filter-impact-level-High filter-impact-level-Moderate filter-status-FedRAMP-Authorized"
+   }
+  ],
+  "Assessors": [
+   {
+    "id": 202896,
+    "name": "360 Advanced Compass Rose",
+    "csp": "360 Advanced Compass Rose",
+    "logo": "https://www.fedramp.gov/assets/img/logos/3PAO_logos/360%20Logo.png",
+    "products_assessing": 3,
+    "accredited_since": "2024-08-21T20:00:00.000Z",
+    "poc": "Keith Frechette",
+    "email": "fedramp@360advanced.com",
+    "founded": 2004,
+    "address": "200 Central Avenue, Suite 2100, St. Petersburg, FL  33701",
+    "desc": "360 Advanced Compass Rose, Inc is an accredited Third-Party Assessment Organization (3PAO) authorized to perform FedRAMP assessments. With a dedicated team of senior advisors, Compass Rose helps organizations navigate the complexities of FedRAMP requirements, providing rigorous testing and validation of security controls to ensure compliance with federal standards. As a 3PAO, Compass Rose offers end-to-end support, from initial preparation and gap analysis to the final assessment, ensuring a smooth and efficient path to FedRAMP authorization.\r\n\r\nCompass Rose is well-equipped to support your government or federal compliance security needs, including FedRAMP, FISMA, NIST 800-171, StateRAMP, and the upcoming CMMC requirements. As a trusted assessor, 360 Advanced is also authorized to evaluate compliance across other critical frameworks such as ISO, PCI, SOC, and HITRUST.",
+    "csps": "N/A",
+    "frameworks": "- ISO 27001\n- SOC 1 / SSAE1 16\n- SOC 2 / AT 101\n- PCI-DSS\n- HITRUST\n- HIPAA/HITECH\n- FISMA",
+    "clients": [
+     {
+      "id": "F1404304159",
+      "csp": "DataBank Holdings",
+      "cso": "FedRAMP Compliant CloudPlus",
+      "status": "FedRAMP Authorized",
+      "impact_level": "Moderate",
+      "impact_level_number": "5"
+     },
+     {
+      "id": "FR2526948870",
+      "csp": "Ontic Technologies",
+      "cso": "Ontic for Government",
+      "status": "FedRAMP Authorized",
+      "impact_level": "Moderate",
+      "impact_level_number": "5"
+     },
+     {
+      "id": "FR2621751490",
+      "csp": "Red Rock Group Holdings",
+      "cso": "GetEKKO",
+      "status": "FedRAMP Ready",
+      "impact_level": "Moderate",
+      "impact_level_number": "5"
+     }
+    ],
+    "filter_classes": " filter-products-assessing-1 filter-impact-level-Moderate filter-status-FedRAMP-Authorized filter-status-FedRAMP-Ready"
+   }
+  ],
+  "AtoMapping": [
+   {
+    "id": "AGENCYAMAZONEW",
+    "agency_id": "22-012",
+    "parent": "Department of Housing and Urban Development",
+    "sub": "",
+    "ato_date": "2014-12-24T20:00:00.000Z",
+    "auth_date": "2013-05-01T20:00:00.000Z",
+    "exp_date": "",
+    "assessment_date": "11/13"
+   }
+  ],
+  "ReuseMapping": [
+   {
+    "id": "AGENCYAMAZONEW",
+    "agency_id": "22-005",
+    "parent": "Department of Health and Human Services",
+    "sub_id": "22-005-04",
+    "sub": "Centers for Disease Control and Prevention",
+    "ato_date": "2024-10-04T20:00:00.000Z",
+    "auth_date": "2026-10-02T20:00:00.000Z",
+    "exp_date": "2027-10-04T20:00:00.000Z"
+   }
+  ]
+ }
+}

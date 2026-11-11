@@ -69,6 +69,18 @@ _PLAYBOOKS: dict[str, RemediationPlaybook] = {
             "Passing re-scan result for root MFA.",
         ),
     ),
+    "aws.iam.user_mfa_enabled": RemediationPlaybook(
+        actions=(
+            "Take the failing users from the finding list (console password, no MFA device).",
+            "Register a hardware or virtual MFA device for each, or remove the console password.",
+            "Deny console and API actions without MFA through an IAM policy condition.",
+        ),
+        evidence=(
+            "IAM credential report showing mfa_active true for every console user.",
+            "The IAM policy that requires MFA.",
+            "Passing re-scan result for IAM user MFA.",
+        ),
+    ),
     "aws.cloudtrail.multi_region_logging": RemediationPlaybook(
         actions=(
             "Create or update an organization/account CloudTrail trail to apply to all regions.",

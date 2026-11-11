@@ -1,0 +1,12 @@
+{
+  "source_url": "https://github.com/FedRAMP/JSONViewer",
+  "source_path": "public/AgencyControlGuidance.controls.merged.json",
+  "upstream_commit_sha": "128f6cc3437bcf0da89ad52427a2a1af4d55e731",
+  "upstream_commit_date": "2026-10-20",
+  "retrieved_at": "2026-11-11",
+  "license": "Public domain (US government work, 17 U.S.C. 105; CC0 1.0 worldwide)",
+  "coverage": "Agency actions and FedRAMP guidance for the 322 controls of the Rev5 Class C baseline. Controls only in Class D have none published.",
+  "files": {
+    "agency-control-guidance.json": {"sha256": "6eb61b61623b75b8a2dfa308551252ec5b87fd8a8b8212bdce041d82f20da543"}
+  }
+}

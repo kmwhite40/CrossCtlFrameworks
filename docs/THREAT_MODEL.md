@@ -20,7 +20,7 @@
 | Operator (admin) | Full | All reads + all writes. |
 | Assessor | High | Reads + writing findings / closing POA&Ms. |
 | Control owner | Medium | Reads + writing implementations + evidence for owned controls. |
-| Viewer | Low | Reads only. |
+| Viewer | Low | Reads only. Enforced centrally: the auth gate refuses a viewer's mutating request except own-MFA enrolment, own notification read-state, read-only POSTs (query run/export, validators) and logging a trust access request (`ccf.api.auth_deps._VIEWER_WRITE_ALLOWLIST`). |
 | Unauthenticated external | **None** | Must not see any operational data. |
 
 **Current state:** local authentication + RBAC are implemented and gate the
@@ -96,7 +96,8 @@ every stored value with a tag failure that named nothing):
    key, and `CCF_AI_CREDENTIAL_MASTER_KEY` to the new one. Both are now live:
    new writes use the new key, existing rows still read.
 2. Run `ccf keys-rewrap`. It moves every stored value onto the current key and
-   reports anything it could not read, with the key id to restore.
+   reports anything it could not read: with the key id to restore, or as
+   damaged when no key would help.
 3. Confirm with `ccf keys-status`, then remove the old key from the
    environment.
 

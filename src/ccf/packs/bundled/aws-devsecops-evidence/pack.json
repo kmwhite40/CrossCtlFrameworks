@@ -1,0 +1,507 @@
+{
+  "id": "aws-devsecops-evidence",
+  "name": "AWS DevSecOps evidence artifacts",
+  "version": "1.0.0",
+  "schema_version": "1",
+  "compatible_concord": ">=0.1",
+  "description": "The 45 evidence artifacts an AWS DevSecOps system produces, each listed against the NIST SP 800-53 Rev. 5 controls it evidences. Adapted from m365-docs-hub's required-artifact table, with its control mappings corrected, missing network, API and identity artifacts added, and log retention set to OMB M-21-31. Lists what to collect; it does not collect anything.",
+  "controls": [
+    {
+      "control_id": "AC-2",
+      "title": "Account Management",
+      "family": "Access Control"
+    },
+    {
+      "control_id": "AC-2(4)",
+      "title": "Automated Audit Actions",
+      "family": "Access Control"
+    },
+    {
+      "control_id": "AC-3",
+      "title": "Access Enforcement",
+      "family": "Access Control"
+    },
+    {
+      "control_id": "AC-4",
+      "title": "Information Flow Enforcement",
+      "family": "Access Control"
+    },
+    {
+      "control_id": "AC-6",
+      "title": "Least Privilege",
+      "family": "Access Control"
+    },
+    {
+      "control_id": "AC-17(1)",
+      "title": "Monitoring and Control",
+      "family": "Access Control"
+    },
+    {
+      "control_id": "AU-2",
+      "title": "Event Logging",
+      "family": "Audit and Accountability"
+    },
+    {
+      "control_id": "AU-3",
+      "title": "Content of Audit Records",
+      "family": "Audit and Accountability"
+    },
+    {
+      "control_id": "AU-12",
+      "title": "Audit Record Generation",
+      "family": "Audit and Accountability"
+    },
+    {
+      "control_id": "CA-7",
+      "title": "Continuous Monitoring",
+      "family": "Assessment, Authorization, and Monitoring"
+    },
+    {
+      "control_id": "CM-2",
+      "title": "Baseline Configuration",
+      "family": "Configuration Management"
+    },
+    {
+      "control_id": "CM-3",
+      "title": "Configuration Change Control",
+      "family": "Configuration Management"
+    },
+    {
+      "control_id": "CM-5",
+      "title": "Access Restrictions for Change",
+      "family": "Configuration Management"
+    },
+    {
+      "control_id": "CM-6",
+      "title": "Configuration Settings",
+      "family": "Configuration Management"
+    },
+    {
+      "control_id": "CM-8",
+      "title": "System Component Inventory",
+      "family": "Configuration Management"
+    },
+    {
+      "control_id": "CM-12",
+      "title": "Information Location",
+      "family": "Configuration Management"
+    },
+    {
+      "control_id": "CM-14",
+      "title": "Signed Components",
+      "family": "Configuration Management"
+    },
+    {
+      "control_id": "IA-2",
+      "title": "Identification and Authentication (Organizational Users)",
+      "family": "Identification and Authentication"
+    },
+    {
+      "control_id": "IA-2(1)",
+      "title": "Multi-factor Authentication to Privileged Accounts",
+      "family": "Identification and Authentication"
+    },
+    {
+      "control_id": "IA-2(2)",
+      "title": "Multi-factor Authentication to Non-privileged Accounts",
+      "family": "Identification and Authentication"
+    },
+    {
+      "control_id": "IA-5",
+      "title": "Authenticator Management",
+      "family": "Identification and Authentication"
+    },
+    {
+      "control_id": "IA-5(7)",
+      "title": "No Embedded Unencrypted Static Authenticators",
+      "family": "Identification and Authentication"
+    },
+    {
+      "control_id": "IA-8",
+      "title": "Identification and Authentication (Non-organizational Users)",
+      "family": "Identification and Authentication"
+    },
+    {
+      "control_id": "RA-5",
+      "title": "Vulnerability Monitoring and Scanning",
+      "family": "Risk Assessment"
+    },
+    {
+      "control_id": "SA-5",
+      "title": "System Documentation",
+      "family": "System and Services Acquisition"
+    },
+    {
+      "control_id": "SA-11",
+      "title": "Developer Testing and Evaluation",
+      "family": "System and Services Acquisition"
+    },
+    {
+      "control_id": "SA-11(1)",
+      "title": "Static Code Analysis",
+      "family": "System and Services Acquisition"
+    },
+    {
+      "control_id": "SA-11(2)",
+      "title": "Threat Modeling and Vulnerability Analyses",
+      "family": "System and Services Acquisition"
+    },
+    {
+      "control_id": "SA-11(8)",
+      "title": "Dynamic Code Analysis",
+      "family": "System and Services Acquisition"
+    },
+    {
+      "control_id": "SC-5",
+      "title": "Denial-of-service Protection",
+      "family": "System and Communications Protection"
+    },
+    {
+      "control_id": "SC-7",
+      "title": "Boundary Protection",
+      "family": "System and Communications Protection"
+    },
+    {
+      "control_id": "SC-8",
+      "title": "Transmission Confidentiality and Integrity",
+      "family": "System and Communications Protection"
+    },
+    {
+      "control_id": "SC-8(1)",
+      "title": "Cryptographic Protection",
+      "family": "System and Communications Protection"
+    },
+    {
+      "control_id": "SC-12",
+      "title": "Cryptographic Key Establishment and Management",
+      "family": "System and Communications Protection"
+    },
+    {
+      "control_id": "SI-2",
+      "title": "Flaw Remediation",
+      "family": "System and Information Integrity"
+    },
+    {
+      "control_id": "SI-3",
+      "title": "Malicious Code Protection",
+      "family": "System and Information Integrity"
+    },
+    {
+      "control_id": "SI-4",
+      "title": "System Monitoring",
+      "family": "System and Information Integrity"
+    },
+    {
+      "control_id": "SI-7(15)",
+      "title": "Code Authentication",
+      "family": "System and Information Integrity"
+    },
+    {
+      "control_id": "SR-4",
+      "title": "Provenance",
+      "family": "Supply Chain Risk Management"
+    }
+  ],
+  "mappings": [],
+  "evidence_requirements": [
+    {
+      "control_id": "AC-2",
+      "description": "IAM credential report [iam]: MFA status, password and access-key age and last use for every IAM user. Source: IAM GenerateCredentialReport. Retention follows your organization's records schedule; this pack assumes no figure."
+    },
+    {
+      "control_id": "IA-2(1)",
+      "description": "IAM credential report [iam]: MFA status, password and access-key age and last use for every IAM user. Source: IAM GenerateCredentialReport. Retention follows your organization's records schedule; this pack assumes no figure."
+    },
+    {
+      "control_id": "IA-2(2)",
+      "description": "IAM credential report [iam]: MFA status, password and access-key age and last use for every IAM user. Source: IAM GenerateCredentialReport. Retention follows your organization's records schedule; this pack assumes no figure."
+    },
+    {
+      "control_id": "IA-5",
+      "description": "IAM credential report [iam]: MFA status, password and access-key age and last use for every IAM user. Source: IAM GenerateCredentialReport. Retention follows your organization's records schedule; this pack assumes no figure."
+    },
+    {
+      "control_id": "AC-3",
+      "description": "IAM Access Analyzer findings [iam]: Resources shared outside the zone of trust, and unused access. Source: IAM Access Analyzer. Retention follows your organization's records schedule; this pack assumes no figure."
+    },
+    {
+      "control_id": "AC-6",
+      "description": "IAM Access Analyzer findings [iam]: Resources shared outside the zone of trust, and unused access. Source: IAM Access Analyzer. Retention follows your organization's records schedule; this pack assumes no figure."
+    },
+    {
+      "control_id": "AC-3",
+      "description": "Service control policies [iam]: Organization-wide guardrails and the accounts they are attached to. Source: AWS Organizations. Retention follows your organization's records schedule; this pack assumes no figure."
+    },
+    {
+      "control_id": "AC-6",
+      "description": "Service control policies [iam]: Organization-wide guardrails and the accounts they are attached to. Source: AWS Organizations. Retention follows your organization's records schedule; this pack assumes no figure."
+    },
+    {
+      "control_id": "IA-2",
+      "description": "Federation configuration [iam]: SAML/OIDC identity provider and permission-set assignments. Source: IAM Identity Center. Retention follows your organization's records schedule; this pack assumes no figure."
+    },
+    {
+      "control_id": "IA-8",
+      "description": "Federation configuration [iam]: SAML/OIDC identity provider and permission-set assignments. Source: IAM Identity Center. Retention follows your organization's records schedule; this pack assumes no figure."
+    },
+    {
+      "control_id": "AC-2",
+      "description": "IAM role trust policies [iam]: Who may assume each role, including cross-account principals and External ID conditions. Source: IAM GetAccountAuthorizationDetails. Retention follows your organization's records schedule; this pack assumes no figure."
+    },
+    {
+      "control_id": "AC-6",
+      "description": "IAM role trust policies [iam]: Who may assume each role, including cross-account principals and External ID conditions. Source: IAM GetAccountAuthorizationDetails. Retention follows your organization's records schedule; this pack assumes no figure."
+    },
+    {
+      "control_id": "AC-2(4)",
+      "description": "CloudTrail IAM events [iam]: Account-management activity (users, roles, policies, keys). Source: CloudTrail. Retain 12 months in active storage and 18 months in cold storage (OMB M-21-31)."
+    },
+    {
+      "control_id": "AU-12",
+      "description": "CloudTrail IAM events [iam]: Account-management activity (users, roles, policies, keys). Source: CloudTrail. Retain 12 months in active storage and 18 months in cold storage (OMB M-21-31)."
+    },
+    {
+      "control_id": "CM-2",
+      "description": "Approved Terraform plans [iac]: The reviewed plan for each infrastructure change. Source: CodePipeline / S3. Retention follows your organization's records schedule; this pack assumes no figure."
+    },
+    {
+      "control_id": "CM-3",
+      "description": "Approved Terraform plans [iac]: The reviewed plan for each infrastructure change. Source: CodePipeline / S3. Retention follows your organization's records schedule; this pack assumes no figure."
+    },
+    {
+      "control_id": "CM-6",
+      "description": "IaC scan reports [iac]: Misconfiguration findings from Checkov, tfsec or similar. Source: CodeBuild. Retention follows your organization's records schedule; this pack assumes no figure."
+    },
+    {
+      "control_id": "SA-11",
+      "description": "IaC scan reports [iac]: Misconfiguration findings from Checkov, tfsec or similar. Source: CodeBuild. Retention follows your organization's records schedule; this pack assumes no figure."
+    },
+    {
+      "control_id": "CM-2",
+      "description": "CloudFormation drift reports [iac]: Deployed resources that no longer match their template. Source: CloudFormation DetectStackDrift. Retention follows your organization's records schedule; this pack assumes no figure."
+    },
+    {
+      "control_id": "CM-6",
+      "description": "CloudFormation drift reports [iac]: Deployed resources that no longer match their template. Source: CloudFormation DetectStackDrift. Retention follows your organization's records schedule; this pack assumes no figure."
+    },
+    {
+      "control_id": "CA-7",
+      "description": "AWS Config compliance reports [iac]: Rule compliance per resource, including non-compliant resources and their remediation. Source: AWS Config. Retention follows your organization's records schedule; this pack assumes no figure."
+    },
+    {
+      "control_id": "CM-6",
+      "description": "AWS Config compliance reports [iac]: Rule compliance per resource, including non-compliant resources and their remediation. Source: AWS Config. Retention follows your organization's records schedule; this pack assumes no figure."
+    },
+    {
+      "control_id": "AU-12",
+      "description": "Build and pipeline execution logs [cicd]: What was built and deployed, when, and by which pipeline run. Source: CodeBuild / CodePipeline. Retain 12 months in active storage and 18 months in cold storage (OMB M-21-31)."
+    },
+    {
+      "control_id": "CM-3",
+      "description": "Build and pipeline execution logs [cicd]: What was built and deployed, when, and by which pipeline run. Source: CodeBuild / CodePipeline. Retain 12 months in active storage and 18 months in cold storage (OMB M-21-31)."
+    },
+    {
+      "control_id": "CM-3",
+      "description": "Branch protection settings [cicd]: Required reviews and status checks on protected branches. Source: Git repository. Retention follows your organization's records schedule; this pack assumes no figure."
+    },
+    {
+      "control_id": "CM-5",
+      "description": "Branch protection settings [cicd]: Required reviews and status checks on protected branches. Source: Git repository. Retention follows your organization's records schedule; this pack assumes no figure."
+    },
+    {
+      "control_id": "RA-5",
+      "description": "Software composition analysis reports [cicd]: Vulnerable dependencies per build. Source: Dependency scanner. Retention follows your organization's records schedule; this pack assumes no figure."
+    },
+    {
+      "control_id": "SA-11",
+      "description": "Software composition analysis reports [cicd]: Vulnerable dependencies per build. Source: Dependency scanner. Retention follows your organization's records schedule; this pack assumes no figure."
+    },
+    {
+      "control_id": "SA-11(1)",
+      "description": "SAST reports [appsec]: Static code analysis findings. Source: Static analyzer. Retention follows your organization's records schedule; this pack assumes no figure."
+    },
+    {
+      "control_id": "SA-11(8)",
+      "description": "DAST reports [appsec]: Dynamic analysis of the running application. Source: OWASP ZAP / Burp. Retention follows your organization's records schedule; this pack assumes no figure."
+    },
+    {
+      "control_id": "SA-11(2)",
+      "description": "Threat models [appsec]: Threats, mitigations and residual risk for the system's design. Source: Repository. Retention follows your organization's records schedule; this pack assumes no figure."
+    },
+    {
+      "control_id": "IA-5(7)",
+      "description": "Secrets scan reports [appsec]: Credentials committed to code or images. Source: Pipeline secret scanner. Retention follows your organization's records schedule; this pack assumes no figure."
+    },
+    {
+      "control_id": "RA-5",
+      "description": "Container image scan reports [appsec]: Vulnerabilities in images before and after deployment. Source: Inspector / ECR. Retention follows your organization's records schedule; this pack assumes no figure."
+    },
+    {
+      "control_id": "SI-4",
+      "description": "Runtime protection alerts [appsec]: Detections from runtime security tooling on workloads. Source: Falco / EDR. Retain 12 months in active storage and 18 months in cold storage (OMB M-21-31)."
+    },
+    {
+      "control_id": "SI-3",
+      "description": "Endpoint detection and response findings [appsec]: Malicious-code detections and responses on hosts. Source: EDR. Retain 12 months in active storage and 18 months in cold storage (OMB M-21-31)."
+    },
+    {
+      "control_id": "SI-4",
+      "description": "Endpoint detection and response findings [appsec]: Malicious-code detections and responses on hosts. Source: EDR. Retain 12 months in active storage and 18 months in cold storage (OMB M-21-31)."
+    },
+    {
+      "control_id": "SA-5",
+      "description": "API documentation (OpenAPI) [api]: The API's operations, inputs and authentication requirements. Source: Repository. Retention follows your organization's records schedule; this pack assumes no figure."
+    },
+    {
+      "control_id": "AC-3",
+      "description": "API authentication configuration [api]: Authorizers on every route; no route left open. Source: API Gateway GetAuthorizers. Retention follows your organization's records schedule; this pack assumes no figure."
+    },
+    {
+      "control_id": "IA-2",
+      "description": "API authentication configuration [api]: Authorizers on every route; no route left open. Source: API Gateway GetAuthorizers. Retention follows your organization's records schedule; this pack assumes no figure."
+    },
+    {
+      "control_id": "SC-5",
+      "description": "API rate limiting configuration [api]: Throttling on stages and rate-based WAF rules. Source: API Gateway / WAFv2. Retention follows your organization's records schedule; this pack assumes no figure."
+    },
+    {
+      "control_id": "AU-3",
+      "description": "API Gateway access logs [api]: Each API request: caller, route, result. Source: CloudWatch Logs. Retain 12 months in active storage and 18 months in cold storage (OMB M-21-31)."
+    },
+    {
+      "control_id": "AU-12",
+      "description": "API Gateway access logs [api]: Each API request: caller, route, result. Source: CloudWatch Logs. Retain 12 months in active storage and 18 months in cold storage (OMB M-21-31)."
+    },
+    {
+      "control_id": "SC-12",
+      "description": "KMS key policies [data]: Who may use and administer each customer-managed key. Source: KMS GetKeyPolicy. Retention follows your organization's records schedule; this pack assumes no figure."
+    },
+    {
+      "control_id": "SC-8",
+      "description": "Encryption in transit configuration [data]: TLS policies on load balancers, CloudFront and API endpoints. Source: ELBv2 / CloudFront / API Gateway. Retention follows your organization's records schedule; this pack assumes no figure."
+    },
+    {
+      "control_id": "SC-8(1)",
+      "description": "Encryption in transit configuration [data]: TLS policies on load balancers, CloudFront and API endpoints. Source: ELBv2 / CloudFront / API Gateway. Retention follows your organization's records schedule; this pack assumes no figure."
+    },
+    {
+      "control_id": "AC-3",
+      "description": "S3 Block Public Access report [data]: Account- and bucket-level public access settings. Source: S3 GetPublicAccessBlock. Retention follows your organization's records schedule; this pack assumes no figure."
+    },
+    {
+      "control_id": "CM-12",
+      "description": "Macie sensitive-data findings [data]: Where sensitive data is stored. Source: Macie. Retention follows your organization's records schedule; this pack assumes no figure."
+    },
+    {
+      "control_id": "IA-5",
+      "description": "Secrets rotation report [data]: Rotation schedule and last rotation for each secret. Source: Secrets Manager. Retention follows your organization's records schedule; this pack assumes no figure."
+    },
+    {
+      "control_id": "AU-2",
+      "description": "CloudTrail organization trail [continuous-monitoring]: Management events for every account in the organization. Source: CloudTrail. Retain 12 months in active storage and 18 months in cold storage (OMB M-21-31)."
+    },
+    {
+      "control_id": "AU-12",
+      "description": "CloudTrail organization trail [continuous-monitoring]: Management events for every account in the organization. Source: CloudTrail. Retain 12 months in active storage and 18 months in cold storage (OMB M-21-31)."
+    },
+    {
+      "control_id": "CA-7",
+      "description": "Security Hub findings [continuous-monitoring]: Aggregated posture findings across accounts. Source: Security Hub. Retention follows your organization's records schedule; this pack assumes no figure."
+    },
+    {
+      "control_id": "SI-4",
+      "description": "GuardDuty findings [continuous-monitoring]: Threat detections across accounts. Source: GuardDuty. Retain 12 months in active storage and 18 months in cold storage (OMB M-21-31)."
+    },
+    {
+      "control_id": "RA-5",
+      "description": "Inspector findings [continuous-monitoring]: Vulnerabilities on EC2, ECR and Lambda. Source: Inspector. Retention follows your organization's records schedule; this pack assumes no figure."
+    },
+    {
+      "control_id": "AU-12",
+      "description": "VPC flow logs [continuous-monitoring]: Accepted and rejected network flows. Source: VPC Flow Logs. Retain 12 months in active storage and 18 months in cold storage (OMB M-21-31)."
+    },
+    {
+      "control_id": "SI-4",
+      "description": "VPC flow logs [continuous-monitoring]: Accepted and rejected network flows. Source: VPC Flow Logs. Retain 12 months in active storage and 18 months in cold storage (OMB M-21-31)."
+    },
+    {
+      "control_id": "SI-4",
+      "description": "DNS query logs [continuous-monitoring]: DNS queries made from VPCs. Source: Route 53 Resolver query logging. Retain 12 months in active storage and 18 months in cold storage (OMB M-21-31)."
+    },
+    {
+      "control_id": "SI-2",
+      "description": "Patch compliance reports [endpoint-runtime]: Missing patches per managed instance. Source: Systems Manager Patch Manager. Retention follows your organization's records schedule; this pack assumes no figure."
+    },
+    {
+      "control_id": "AC-17(1)",
+      "description": "Session Manager logs [endpoint-runtime]: Administrative sessions and the commands run in them. Source: Systems Manager Session Manager. Retain 12 months in active storage and 18 months in cold storage (OMB M-21-31)."
+    },
+    {
+      "control_id": "AU-12",
+      "description": "Session Manager logs [endpoint-runtime]: Administrative sessions and the commands run in them. Source: Systems Manager Session Manager. Retain 12 months in active storage and 18 months in cold storage (OMB M-21-31)."
+    },
+    {
+      "control_id": "AC-4",
+      "description": "Security group export [network]: Every inbound and outbound rule, with its source or destination. Source: EC2 DescribeSecurityGroups. Retention follows your organization's records schedule; this pack assumes no figure."
+    },
+    {
+      "control_id": "SC-7",
+      "description": "Security group export [network]: Every inbound and outbound rule, with its source or destination. Source: EC2 DescribeSecurityGroups. Retention follows your organization's records schedule; this pack assumes no figure."
+    },
+    {
+      "control_id": "SC-7",
+      "description": "Network ACL export [network]: Subnet-level allow and deny rules. Source: EC2 DescribeNetworkAcls. Retention follows your organization's records schedule; this pack assumes no figure."
+    },
+    {
+      "control_id": "AC-4",
+      "description": "Transit Gateway route tables [network]: Which networks can reach which, across VPCs and accounts. Source: EC2 SearchTransitGatewayRoutes. Retention follows your organization's records schedule; this pack assumes no figure."
+    },
+    {
+      "control_id": "SC-7",
+      "description": "Transit Gateway route tables [network]: Which networks can reach which, across VPCs and accounts. Source: EC2 SearchTransitGatewayRoutes. Retention follows your organization's records schedule; this pack assumes no figure."
+    },
+    {
+      "control_id": "SC-7",
+      "description": "WAF rule sets [network]: Web ACLs, their rules and the resources they protect. Source: WAFv2. Retention follows your organization's records schedule; this pack assumes no figure."
+    },
+    {
+      "control_id": "SI-4",
+      "description": "WAF logs [network]: Requests WAF allowed, blocked or counted. Source: WAFv2 logging. Retain 12 months in active storage and 18 months in cold storage (OMB M-21-31)."
+    },
+    {
+      "control_id": "CM-8",
+      "description": "SBOMs [supply-chain]: Every component in each build (CycloneDX or SPDX). Source: Artifact repository. Retention follows your organization's records schedule; this pack assumes no figure."
+    },
+    {
+      "control_id": "SR-4",
+      "description": "SBOMs [supply-chain]: Every component in each build (CycloneDX or SPDX). Source: Artifact repository. Retention follows your organization's records schedule; this pack assumes no figure."
+    },
+    {
+      "control_id": "CM-14",
+      "description": "Artifact signatures and attestations [supply-chain]: Signed images and packages, verified before deployment. Source: Cosign / AWS Signer. Retention follows your organization's records schedule; this pack assumes no figure."
+    },
+    {
+      "control_id": "SI-7(15)",
+      "description": "Artifact signatures and attestations [supply-chain]: Signed images and packages, verified before deployment. Source: Cosign / AWS Signer. Retention follows your organization's records schedule; this pack assumes no figure."
+    },
+    {
+      "control_id": "SR-4",
+      "description": "Build provenance [supply-chain]: Which source, builder and inputs produced each artifact (SLSA). Source: CodePipeline. Retention follows your organization's records schedule; this pack assumes no figure."
+    }
+  ],
+  "rules": [],
+  "policy_templates": [],
+  "questionnaire_templates": [],
+  "connector_mappings": [],
+  "dashboard_cards": [],
+  "tests": [
+    {
+      "key": "has_controls",
+      "assert": "controls>=39"
+    },
+    {
+      "key": "has_evidence",
+      "assert": "evidence_requirements>=71"
+    }
+  ]
+}

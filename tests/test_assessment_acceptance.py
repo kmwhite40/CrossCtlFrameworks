@@ -24,7 +24,14 @@ from ccf.assessment.engine.service import (
 from ccf.assessment.sar import generate_sar_docx
 from ccf.assessment.seed import result_to_dict, summarize_results
 from ccf.db import session_scope
-from ccf.models import Assessment, AssessmentControlResult, Control, Organization, System
+from ccf.models import (
+    POAM,
+    Assessment,
+    AssessmentControlResult,
+    Control,
+    Organization,
+    System,
+)
 from ccf.models_ai_actions import AiActionRun
 from ccf.models_assessment_engine import AssessmentControlProposal, AssessmentObjectiveProposal
 
@@ -503,19 +510,37 @@ async def test_accepting_twice_does_not_duplicate_the_result_row(
         result = await accept_control_proposal(s, proposal_id, accepted_by="first@example.com")
         assert result.finding == "satisfied"
 
-    # Re-evaluate under a different verdict and accept again -- must update the
-    # one existing row, not violate uq_assess_ctrl with a second insert.
+    # Re-assess under a different verdict and accept again -- must update the
+    # one existing row, not violate uq_assess_ctrl with a second insert. This
+    # goes through a re-evaluation proposal, the supported path: the accepted
+    # first-pass proposal is decided and may not be reopened in place
+    # (ProposalDecidedError) -- doing that is what let a *rejected* proposal be
+    # re-run and accepted.
     monkeypatch.setattr(service, "evaluate_objective", _fake_evaluate_always("not_satisfied"))
     async with session_scope() as s:
-        proposal = (
+        first = await s.get(AssessmentControlProposal, proposal_id)
+        assert first is not None
+        with pytest.raises(service.ProposalDecidedError):
+            await evaluate_control_proposal(s, first)
+    async with session_scope() as s:
+        existing = (
             await s.execute(
-                select(AssessmentControlProposal).where(
-                    AssessmentControlProposal.id == proposal_id
+                select(AssessmentControlResult).where(
+                    AssessmentControlResult.assessment_id == assessment_id
                 )
             )
         ).scalar_one()
-        proposal = await evaluate_control_proposal(s, proposal)
-        result = await accept_control_proposal(s, proposal_id, accepted_by="second@example.com")
+        system_id = (
+            await s.execute(select(Assessment.system_id).where(Assessment.id == assessment_id))
+        ).scalar_one()
+        poam = POAM(system_id=system_id, title="remediated")
+        s.add(poam)
+        await s.flush()
+        again = await service.open_reevaluation_proposal(
+            s, result=existing, source_poam_id=poam.id
+        )
+        again = await evaluate_control_proposal(s, again)
+        result = await accept_control_proposal(s, int(again.id), accepted_by="second@example.com")
         assert result.finding == "other_than_satisfied"
 
     async with session_scope() as s:

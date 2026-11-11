@@ -27,7 +27,14 @@ from ccf.assessment.engine.service import (
 )
 from ccf.db import session_scope
 from ccf.ingest.scanners import SEVERITY_SLA_DAYS
-from ccf.models import POAM, Assessment, Control, Organization, System
+from ccf.models import (
+    POAM,
+    Assessment,
+    AssessmentControlResult,
+    Control,
+    Organization,
+    System,
+)
 from ccf.models_assessment_engine import AssessmentControlProposal
 
 pytestmark = pytest.mark.usefixtures("fresh_engine")
@@ -166,20 +173,22 @@ async def test_reaccepting_is_idempotent_and_does_not_overwrite_an_edited_poam(
         poam = (await s.execute(select(POAM).where(POAM.id == poam_id))).scalar_one()
         poam.title = "Edited by a human, must survive re-acceptance"
 
-    # Re-evaluate (still other_than_satisfied via a different verdict word,
-    # so this is a genuine second evaluate+accept cycle, not a no-op) and
-    # accept again.
+    # Re-assess (still other_than_satisfied via a different verdict word, so
+    # this is a genuine second evaluate+accept cycle, not a no-op) and accept
+    # again -- through a re-evaluation proposal for this POA&M, the supported
+    # path: the accepted first-pass proposal may not be reopened in place.
     monkeypatch.setattr(service, "evaluate_objective", _fake_evaluate("not_satisfied"))
     async with session_scope() as s:
-        proposal = (
+        result_row = (
             await s.execute(
-                select(AssessmentControlProposal).where(
-                    AssessmentControlProposal.id == proposal_id
-                )
+                select(AssessmentControlResult).where(AssessmentControlResult.id == result_id)
             )
         ).scalar_one()
-        proposal = await evaluate_control_proposal(s, proposal)
-        await accept_control_proposal(s, proposal_id, accepted_by="second@x.test")
+        again = await service.open_reevaluation_proposal(
+            s, result=result_row, source_poam_id=poam_id
+        )
+        again = await evaluate_control_proposal(s, again)
+        await accept_control_proposal(s, int(again.id), accepted_by="second@x.test")
 
     poams = await _poams_for_result(result_id)
     assert len(poams) == 1, "re-acceptance must not create a second POA&M"

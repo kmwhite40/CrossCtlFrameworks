@@ -39,6 +39,7 @@ from ...cr26.scn import seed_scn
 from ...cr26.sdr import seed_sdr
 from ...cr26.store import DELIVERABLE_KINDS, put_document
 from ...cr26.ver import VerSeedResult, seed_avi, seed_vdr, seed_ver_history
+from ...fedramp20x.rules import ksi_ids, load_rules
 from ...models import System
 from ...models_cr26 import DOCUMENT_KEY_MAX_LENGTH, Cr26Document
 from ..auth_deps import get_principal, require_role
@@ -80,7 +81,22 @@ def _summary(row: Cr26Document) -> dict[str, Any]:
 
 
 def _full(row: Cr26Document) -> dict[str, Any]:
-    return {**_summary(row), "document": row.document}
+    out = {**_summary(row), "document": row.document}
+    if row.kind == "sdr":
+        # Recomputed on every read, not only returned by the seed: the stored
+        # document validates whether or not it cites indicators FedRAMP's
+        # current rules define, so this is the only place a reader learns it.
+        defined = ksi_ids(load_rules())
+        entries = (row.document or {}).get("keySecurityIndicators")
+        out["undefined_ksi_ids"] = sorted(
+            {
+                e["ksiId"]
+                for e in (entries if isinstance(entries, list) else [])
+                if isinstance(e, dict) and isinstance(e.get("ksiId"), str)
+                and e["ksiId"] not in defined
+            }
+        )
+    return out
 
 
 async def _owned_system(
@@ -326,7 +342,11 @@ async def seed_sdr_document(
       the only signal such a gap ever produces. Most entries name something
       dropped from the document; some name a repair to an entry that is
       still PRESENT -- a duplicate ``frrID`` kept rather than discarded, or a
-      schema-invalid optional field silently emptied.
+      schema-invalid optional field silently emptied. An ``frrID`` the pinned
+      FedRAMP Consolidated Rules do not define is one such kept-and-named entry.
+    * ``undefined_ksi_ids`` -- indicators the document cites that the pinned
+      Consolidated Rules (``rules_version``) do not define. Kept, because the
+      narrative is human work; named, because the document validates anyway.
 
     Like the CPO seed, the result is **invalid by design**:
     ``certificationPackageOverviewUri`` is required at the root and cannot be
@@ -345,6 +365,10 @@ async def seed_sdr_document(
         "controls_with_dropped_parts": result.controls_with_dropped_parts,
         "rendered_control_count": result.rendered_control_count,
         "omitted_requirements": result.omitted_requirements,
+        "undefined_ksi_ids": result.undefined_ksi_ids,
+        "out_of_scope_ksi_ids": result.out_of_scope_ksi_ids,
+        "frr_unaddressed": result.frr_unaddressed,
+        "rules_version": result.rules_version,
     }
 
 
@@ -409,6 +433,7 @@ async def seed_vdr_document(
         system_id=system_id,
         period_from=period.period_from,
         period_to=period.period_to,
+        actor=principal.email,  # who ran it; not `updated_by`, which marks authorship
     )
     await session.commit()
     await session.refresh(result.document)
@@ -429,6 +454,7 @@ async def seed_avi_document(
         system_id=system_id,
         period_from=period.period_from,
         period_to=period.period_to,
+        actor=principal.email,  # who ran it; not `updated_by`, which marks authorship
     )
     await session.commit()
     await session.refresh(result.document)
@@ -444,7 +470,7 @@ async def seed_ver_history_document(
     """Seed this system's Historical VER Activity. Admin only. No period --
     the schema has none; the document carries ``generatedAt`` instead."""
     await _owned_system(session, system_id, principal)
-    result = await seed_ver_history(session, system_id=system_id)
+    result = await seed_ver_history(session, system_id=system_id, actor=principal.email)
     await session.commit()
     await session.refresh(result.document)
     return _ver_body(result)

@@ -1,26 +1,27 @@
 """Interoperability backbone — events, notifications, and outbound webhooks.
 
 Every module calls :func:`emit` when something happens; :func:`emit` records an
-append-only :class:`Event` and fans it out to subscribed :class:`Webhook`s, so
-external systems and the internal activity feed both stay in sync. :func:`notify`
-raises a de-duplicated :class:`Notification` for a user or an org. This is the
+append-only :class:`Event` and, in the same transaction, queues its derived work
+(webhook deliveries and registered consumers) in the outbox
+(:func:`ccf.events.outbox.enqueue`). Nothing is sent during the request: a
+worker delivers after commit, so a rolled-back change reaches no subscriber. :func:`notify`
+raises a de-duplicated :class:`Notification` for a user or an org; its Slack/Teams
+post is queued the same way and sent after commit. This is the
 "everything can communicate" layer the other engines build on.
 """
 
 from __future__ import annotations
 
-import hashlib
-import hmac
-import json
 from typing import Any
 
-import httpx
-from sqlalchemy import select
+from sqlalchemy import delete, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ..events import outbox
 from ..logging import get_logger
-from ..models import Event, Notification, Webhook
-from . import delivery
+from ..models import Event, Notification, NotificationRead
+from . import delivery, org_channel
 
 log = get_logger(__name__)
 
@@ -36,8 +37,18 @@ async def emit(
     entity_id: str | int | None = None,
     payload: dict[str, Any] | None = None,
     dispatch: bool = True,
+    external: bool = False,
 ) -> Event:
-    """Record an event and (best-effort) dispatch it to subscribed webhooks."""
+    """Record an event and queue the work it triggers, in the caller's transaction.
+
+    ``dispatch=False`` queues no webhook delivery; registered consumers still
+    match. While a consumer runs (``outbox.CURRENT_CONSUMER`` set) the event is
+    stamped with its chain depth (``payload["_depth"]``) for the worker, and
+    reaches no webhook unless ``external=True``: a recompute's bookkeeping is
+    not news, but a finding a consumer makes (KSI drift) is (ruling R20).
+    """
+    if outbox.CURRENT_CONSUMER.get() is not None:
+        payload = {**(payload or {}), "_depth": outbox.CURRENT_DEPTH.get()}
     ev = Event(
         organization_id=org_id,
         actor=actor,
@@ -49,42 +60,28 @@ async def emit(
     )
     session.add(ev)
     await session.flush()
-    if dispatch:
-        await _dispatch_webhooks(session, ev)
+    await outbox.enqueue(session, ev, dispatch=dispatch, external=external)
     return ev
 
 
-async def _dispatch_webhooks(session: AsyncSession, ev: Event) -> None:
-    stmt = select(Webhook).where(Webhook.active.is_(True))
-    if ev.organization_id is not None:
-        stmt = stmt.where(
-            (Webhook.organization_id == ev.organization_id) | (Webhook.organization_id.is_(None))
-        )
-    hooks = (await session.execute(stmt)).scalars().all()
-    if not hooks:
-        return
-    body = json.dumps(
-        {
-            "verb": ev.verb,
-            "entity_type": ev.entity_type,
-            "entity_id": ev.entity_id,
-            "summary": ev.summary,
-            "payload": ev.payload,
-        }
-    ).encode()
-    for hook in hooks:
-        subs = hook.events or []
-        if subs and ev.verb not in subs and ev.entity_type not in subs:
-            continue
-        headers = {"Content-Type": "application/json"}
-        if hook.secret:
-            sig = hmac.new(hook.secret.encode(), body, hashlib.sha256).hexdigest()
-            headers["X-CCF-Signature"] = f"sha256={sig}"
-        try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                await client.post(hook.url, content=body, headers=headers)
-        except Exception as e:  # best-effort — a bad webhook must not break the txn
-            log.warning("webhook.dispatch_failed", url=hook.url, error=str(e)[:200])
+async def system_org(session: AsyncSession, system_id: int | None) -> int | None:
+    """The organization that owns ``system_id`` (``None`` if unknown).
+
+    An event's organization is the owning record's, never the caller's: a
+    global principal (``org_id is None``) writing a tenant's record would
+    otherwise emit an org-less event that no org-scoped consumer can place.
+    """
+    if system_id is None:
+        return None
+    from ..models import System  # noqa: PLC0415
+
+    return (
+        await session.execute(select(System.organization_id).where(System.id == system_id))
+    ).scalar_one_or_none()
+
+
+#: Higher is more severe; an update that raises severity re-surfaces an alert.
+_SEVERITY_RANK = {"info": 0, "warning": 1, "critical": 2}
 
 
 async def notify(
@@ -111,9 +108,21 @@ async def notify(
             await session.execute(select(Notification).where(Notification.dedupe_key == dedupe_key))
         ).scalar_one_or_none()
         if existing is not None:
+            escalated = _SEVERITY_RANK.get(severity, 0) > _SEVERITY_RANK.get(existing.severity, 0)
+            if escalated:
+                # Escalated (a warning became critical): it is news again, so
+                # it comes back for everyone who had read the milder version.
+                await session.execute(
+                    delete(NotificationRead).where(NotificationRead.notification_id == existing.id)
+                )
+                existing.read_at = None
             existing.title = title[:512]
             existing.severity = severity
             existing.body = body
+            if escalated:
+                # News again, so it is posted (if policy sends its new severity);
+                # a refresh at the same or a lower severity is not.
+                await _queue_delivery(session, existing)
             return existing
     n = Notification(
         organization_id=org_id,
@@ -126,8 +135,35 @@ async def notify(
         entity_id=eid,
         dedupe_key=dedupe_key,
     )
-    session.add(n)
-    await session.flush()
-    # Best-effort outbound delivery (Slack/Teams webhook) for severe alerts.
-    await delivery.deliver(n)
+    try:
+        # Its own savepoint: under a tenant's RLS a row with this (globally
+        # unique) dedupe_key can exist yet be invisible -- another tenant's, or
+        # an org-less one migration 0097 has not removed yet. The insert then
+        # violates the unique index; contained here, that costs this one alert
+        # instead of rolling back the caller's whole step (an org's entire
+        # digest, every cycle).
+        async with session.begin_nested():
+            session.add(n)
+            await session.flush()
+    except IntegrityError:
+        log.warning("notify.dedupe_key_hidden_collision", dedupe_key=dedupe_key, org_id=org_id)
+        return None
+    await _queue_delivery(session, n)
     return n
+
+
+async def _queue_delivery(session: AsyncSession, n: Notification) -> None:
+    """Queue the Slack/Teams posts of ``n``; posted after commit.
+
+    One job per destination that sends it, decided now: the operator's
+    channel under ``CCF_NOTIFY_*``, and the notification's organization's own
+    channel if it has one, enabled, whose minimum severity ``n`` meets. Each is
+    queued independently (``enqueue_notification`` contains its own failure),
+    and an org-less notification never reaches any organization's channel.
+    """
+    text = delivery.render(n)
+    if text is not None:
+        await outbox.enqueue_notification(session, n, text, destination="ops")
+    org_text = await org_channel.org_job_text(session, n)
+    if org_text is not None:
+        await outbox.enqueue_notification(session, n, org_text, destination="org")

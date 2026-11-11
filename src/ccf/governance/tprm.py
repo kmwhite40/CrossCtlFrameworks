@@ -92,3 +92,21 @@ def score_responses(responses: list[dict[str, Any]]) -> dict[str, Any]:
         "total": total,
         "flagged": flagged,
     }
+
+
+async def emit_vendor_rated(session: Any, vendor: Any, rating: str, *, actor: str | None) -> None:
+    """A review that changes a vendor's risk rating changes what the assurance
+    graph draws for it. Called only when the rating actually changes, with the
+    vendor's own organization."""
+    from . import bus  # noqa: PLC0415 -- this module is otherwise pure scoring
+
+    await bus.emit(
+        session,
+        verb="updated",
+        entity_type="vendor",
+        entity_id=vendor.id,
+        summary=f"Vendor {vendor.name} risk rating: {vendor.risk_rating or 'unrated'} -> {rating}",
+        org_id=vendor.organization_id,
+        actor=actor,
+        payload={"risk_rating": rating},
+    )

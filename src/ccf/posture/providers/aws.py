@@ -103,6 +103,9 @@ MIN_PASSWORD_REUSE_PREVENTION = 24
 #: An access key that is not ``Active`` cannot authenticate, so it is excluded
 #: from the rotation verdict rather than counted as a pass.
 _ACTIVE_KEY_STATUS = "Active"
+#: The other statuses IAM documents for an access key. Anything else, missing
+#: included, is unknown -- never read as "cannot authenticate".
+_UNUSABLE_KEY_STATUSES = ("Inactive", "Expired")
 
 
 ROOT_MFA_ENABLED = PostureCheck(
@@ -113,6 +116,19 @@ ROOT_MFA_ENABLED = PostureCheck(
     expected="the account root user has a multi-factor authentication device enabled",
     control_ids=("IA-2", "IA-2(1)"),
     required_permissions=("iam:GetAccountSummary",),
+)
+
+USER_MFA_ENABLED = PostureCheck(
+    key="aws.iam.user_mfa_enabled",
+    title="Every IAM user with a console password has MFA enabled",
+    provider="aws_govcloud",
+    resource_type="iam_user",
+    expected=(
+        "every IAM user who can sign in to the console has an MFA device active, "
+        "per the IAM credential report"
+    ),
+    control_ids=("IA-2(1)", "IA-2(2)"),
+    required_permissions=("iam:GenerateCredentialReport", "iam:GetCredentialReport"),
 )
 
 #: The one place the password-policy expectation is worded, rendered once from
@@ -247,7 +263,9 @@ PATCH_COMPLIANCE = PostureCheck(
     resource_type="aws_instance",
     expected="no Systems Manager-managed instance has missing or failed patches",
     control_ids=("SI-2", "SI-2(2)", "CM-6"),
-    required_permissions=("ssm:DescribeInstancePatchStates",),
+    # Two calls: the reader lists managed instances before asking their patch
+    # state, so a denial on the first must name it too.
+    required_permissions=("ssm:DescribeInstanceInformation", "ssm:DescribeInstancePatchStates"),
 )
 
 RDS_NOT_PUBLICLY_ACCESSIBLE = PostureCheck(
@@ -292,9 +310,156 @@ EBS_ENCRYPTION_BY_DEFAULT = PostureCheck(
     required_permissions=("ec2:GetEbsEncryptionByDefault",),
 )
 
+# ── Ported from m365-docs-hub's boundary collector, re-judged ────────────────
+# The source probed these and passed on vacuity (no VPCs = 100% flow logs, no
+# load balancers = "TLS enforced"), counted a configured-but-stopped recorder,
+# and named a "recovery account" and an "evidence bucket" by regex. Here an
+# empty fleet is not_applicable, a stopped thing is a fail, an unreadable one
+# is manual_review_required, and the buckets judged are the ones CloudTrail
+# actually writes to.
+
+CONFIG_RECORDER = PostureCheck(
+    key="aws.config.recorder_recording",
+    title="AWS Config records every supported resource type",
+    provider="aws_govcloud",
+    resource_type="aws_account",
+    expected="an AWS Config recorder is recording all supported resource types",
+    control_ids=("CM-8", "CM-8(2)", "CM-3"),
+    required_permissions=(
+        "config:DescribeConfigurationRecorders",
+        "config:DescribeConfigurationRecorderStatus",
+    ),
+)
+
+GUARDDUTY_ENABLED = PostureCheck(
+    key="aws.guardduty.enabled",
+    title="GuardDuty threat detection is on",
+    provider="aws_govcloud",
+    resource_type="aws_account",
+    expected="a GuardDuty detector in this region has status ENABLED",
+    control_ids=("SI-4", "SI-4(2)"),
+    required_permissions=("guardduty:ListDetectors", "guardduty:GetDetector"),
+)
+
+ACCESS_ANALYZER_ENABLED = PostureCheck(
+    key="aws.accessanalyzer.external_access_enabled",
+    title="IAM Access Analyzer watches for external access",
+    provider="aws_govcloud",
+    resource_type="aws_account",
+    expected="an ACTIVE account or organization external-access analyzer exists",
+    control_ids=("SI-4", "AC-6"),
+    required_permissions=("access-analyzer:ListAnalyzers",),
+)
+
+KMS_KEY_ROTATION = PostureCheck(
+    key="aws.kms.cmk_rotation_enabled",
+    title="Customer-managed KMS keys rotate",
+    provider="aws_govcloud",
+    resource_type="aws_kms_key",
+    expected="every enabled symmetric customer-managed key has automatic rotation on",
+    control_ids=("SC-12", "SC-12(1)"),
+    required_permissions=("kms:ListKeys", "kms:DescribeKey", "kms:GetKeyRotationStatus"),
+)
+
+ELB_LISTENERS_TLS = PostureCheck(
+    key="aws.elbv2.listeners_tls",
+    title="Load balancer listeners encrypt in transit",
+    provider="aws_govcloud",
+    resource_type="aws_lb_listener",
+    expected="every listener is HTTPS or TLS, or an HTTP listener that only redirects to HTTPS",
+    control_ids=("SC-8", "SC-8(1)"),
+    required_permissions=(
+        "elasticloadbalancing:DescribeLoadBalancers",
+        "elasticloadbalancing:DescribeListeners",
+        "elasticloadbalancing:DescribeRules",
+    ),
+)
+
+WAF_PUBLIC_ALB = PostureCheck(
+    key="aws.wafv2.public_alb_protected",
+    title="Internet-facing load balancers sit behind a WAF",
+    provider="aws_govcloud",
+    resource_type="aws_lb",
+    expected="every internet-facing application load balancer has a WAF web ACL",
+    control_ids=("SC-7",),
+    required_permissions=(
+        "elasticloadbalancing:DescribeLoadBalancers",
+        "wafv2:GetWebACLForResource",
+    ),
+)
+
+TRAIL_BUCKET_OBJECT_LOCK = PostureCheck(
+    key="aws.s3.trail_bucket_object_lock",
+    title="CloudTrail log buckets are write-once",
+    provider="aws_govcloud",
+    resource_type="aws_s3_bucket",
+    expected="each bucket CloudTrail writes to has Object Lock with a default retention",
+    control_ids=("AU-9", "AU-11"),
+    required_permissions=("cloudtrail:DescribeTrails", "s3:GetBucketObjectLockConfiguration"),
+)
+
+RDS_STORAGE_ENCRYPTED = PostureCheck(
+    key="aws.rds.storage_encrypted",
+    title="Database storage is encrypted at rest",
+    provider="aws_govcloud",
+    resource_type="aws_db_instance",
+    expected="every RDS instance has StorageEncrypted enabled",
+    control_ids=("SC-28", "SC-28(1)"),
+    required_permissions=("rds:DescribeDBInstances",),
+)
+
+# ── DoD impact-level checks (m365-docs-hub's IL5 rules, re-grounded) ─────────
+# The source's 14 IL5 rules were mostly an organization's engineering
+# preferences, three passed by default, and its service lists were wrong
+# against AWS's own table. These three are the parts grounded in the DoD CC
+# SRG or in AWS's published scope, and each takes the system's *declared*
+# impact level (``System.dod_impact_level``, injected by the scan --
+# ``posture.parameters.SYSTEM_PARAMETERS``): with none declared they report
+# not_applicable rather than judging against a level nobody chose.
+
+IL_GOVCLOUD_PARTITION = PostureCheck(
+    key="aws.partition.govcloud_for_impact_level",
+    title="An IL4/IL5 workload runs in AWS GovCloud (US)",
+    provider="aws_govcloud",
+    resource_type="aws_account",
+    expected="the account is in the aws-us-gov partition when the system is IL4 or IL5",
+    control_ids=("SA-9(5)",),
+    required_permissions=("sts:GetCallerIdentity",),
+)
+
+IL_SERVICE_SCOPE = PostureCheck(
+    key="aws.services.dod_srg_scope",
+    title="Services in use are in AWS's DoD SRG scope for the system's level",
+    provider="aws_govcloud",
+    resource_type="aws_service",
+    expected="every AWS service with resources in the account is listed by AWS as authorized "
+    "at the system's DoD impact level",
+    control_ids=("SA-9",),
+    required_permissions=("config:GetDiscoveredResourceCounts",),
+)
+
+IL_CUSTOMER_KEYS = PostureCheck(
+    key="aws.kms.customer_managed_keys_at_rest",
+    title="Data at rest is encrypted under keys the mission owner controls",
+    provider="aws_govcloud",
+    resource_type="aws_resource",
+    expected="at IL5 and above, S3 default encryption, the EBS default key and RDS storage use "
+    "customer-managed KMS keys",
+    control_ids=("SC-12", "SC-28(1)"),
+    required_permissions=(
+        "s3:ListAllMyBuckets",
+        "s3:GetEncryptionConfiguration",
+        "ec2:GetEbsEncryptionByDefault",
+        "ec2:GetEbsDefaultKmsKeyId",
+        "rds:DescribeDBInstances",
+        "kms:DescribeKey",
+    ),
+)
+
 CHECKS: tuple[PostureCheck, ...] = (
     ROOT_MFA_ENABLED,
     PASSWORD_POLICY,
+    USER_MFA_ENABLED,
     ACCESS_KEY_ROTATION,
     CLOUDTRAIL_MULTI_REGION,
     CLOUDTRAIL_LOG_FILE_VALIDATION,
@@ -306,6 +471,17 @@ CHECKS: tuple[PostureCheck, ...] = (
     RDS_NOT_PUBLICLY_ACCESSIBLE,
     INSPECTOR_ENABLED,
     PATCH_COMPLIANCE,
+    CONFIG_RECORDER,
+    GUARDDUTY_ENABLED,
+    ACCESS_ANALYZER_ENABLED,
+    KMS_KEY_ROTATION,
+    ELB_LISTENERS_TLS,
+    WAF_PUBLIC_ALB,
+    TRAIL_BUCKET_OBJECT_LOCK,
+    RDS_STORAGE_ENCRYPTED,
+    IL_GOVCLOUD_PARTITION,
+    IL_SERVICE_SCOPE,
+    IL_CUSTOMER_KEYS,
 )
 
 #: The four settings that together make a bucket non-public. All four are
@@ -335,6 +511,7 @@ _PUBLIC_ACCESS_BLOCK_SETTINGS = (
 #: the fleet comes from, not every call made to complete a row.
 ENDPOINTS: dict[str, str] = {
     ROOT_MFA_ENABLED.key: "iam.get_account_summary",
+    USER_MFA_ENABLED.key: "iam.get_credential_report",
     PASSWORD_POLICY.key: "iam.get_account_password_policy",
     ACCESS_KEY_ROTATION.key: "iam.list_access_keys",
     CLOUDTRAIL_MULTI_REGION.key: "cloudtrail.describe_trails",
@@ -357,6 +534,18 @@ ENDPOINTS: dict[str, str] = {
     RDS_NOT_PUBLICLY_ACCESSIBLE.key: "rds.describe_db_instances",
     INSPECTOR_ENABLED.key: "inspector2.batch_get_account_status",
     PATCH_COMPLIANCE.key: "ssm.describe_instance_patch_states",
+    CONFIG_RECORDER.key: "config.describe_configuration_recorder_status",
+    GUARDDUTY_ENABLED.key: "guardduty.list_detectors",
+    ACCESS_ANALYZER_ENABLED.key: "accessanalyzer.list_analyzers",
+    KMS_KEY_ROTATION.key: "kms.list_keys",
+    ELB_LISTENERS_TLS.key: "elbv2.describe_listeners",
+    WAF_PUBLIC_ALB.key: "wafv2.get_web_acl_for_resource",
+    TRAIL_BUCKET_OBJECT_LOCK.key: "s3.get_object_lock_configuration",
+    # The same fleet RDS_NOT_PUBLICLY_ACCESSIBLE reads, judged on another field.
+    RDS_STORAGE_ENCRYPTED.key: "rds.describe_db_instances",
+    IL_GOVCLOUD_PARTITION.key: "sts.get_caller_identity",
+    IL_SERVICE_SCOPE.key: "config.get_discovered_resource_counts",
+    IL_CUSTOMER_KEYS.key: "kms.describe_key",
 }
 
 #: Evaluators that need to be told which account they are judging, because
@@ -365,6 +554,7 @@ ACCOUNT_SCOPED: frozenset[str] = frozenset(
     {
         ROOT_MFA_ENABLED.key,
         PASSWORD_POLICY.key,
+        USER_MFA_ENABLED.key,
         CLOUDTRAIL_MULTI_REGION.key,
         EBS_ENCRYPTION_BY_DEFAULT.key,
         SECURITY_GROUP_ADMIN_INGRESS.key,
@@ -372,6 +562,17 @@ ACCOUNT_SCOPED: frozenset[str] = frozenset(
         RDS_NOT_PUBLICLY_ACCESSIBLE.key,
         INSPECTOR_ENABLED.key,
         PATCH_COMPLIANCE.key,
+        CONFIG_RECORDER.key,
+        GUARDDUTY_ENABLED.key,
+        ACCESS_ANALYZER_ENABLED.key,
+        KMS_KEY_ROTATION.key,
+        ELB_LISTENERS_TLS.key,
+        WAF_PUBLIC_ALB.key,
+        TRAIL_BUCKET_OBJECT_LOCK.key,
+        RDS_STORAGE_ENCRYPTED.key,
+        IL_GOVCLOUD_PARTITION.key,
+        IL_SERVICE_SCOPE.key,
+        IL_CUSTOMER_KEYS.key,
     }
 )
 
@@ -431,6 +632,37 @@ def evaluate_root_mfa(
                 verdict="manual_review_required",
                 observed="IAM account summary unavailable; root MFA state not observed",
                 detail={"rows": len(rows)},
+            )
+        ]
+    if rows and rows[0].get("Partition") == "aws-us-gov":
+        # An AWS GovCloud (US) account's root user cannot sign in to the
+        # console, so ``AccountMFAEnabled=0`` there is not an unprotected root
+        # login -- failing it filed a Critical finding against every GovCloud
+        # account (m365-docs-hub's report made exactly this mistake). But root
+        # *access keys* still work and bypass MFA entirely, so the check is
+        # not_applicable only when they are confirmed absent: present is a
+        # failure, and unreported is for review -- never a silent pass.
+        keys = summary.get("AccountAccessKeysPresent")
+        detail = {"partition": "aws-us-gov", "AccountMFAEnabled": summary.get("AccountMFAEnabled"),
+                  "AccountAccessKeysPresent": keys}
+        if keys == 0 or keys is False:
+            verdict, observed = "not_applicable", (
+                "the root user of an AWS GovCloud (US) account cannot sign in, and it has "
+                "no access keys"
+            )
+        elif keys == 1 or keys is True:
+            verdict, observed = "fail", (
+                "root access keys are present: the GovCloud root user cannot sign in, but "
+                "its keys can act on the account without MFA"
+            )
+        else:
+            verdict, observed = "manual_review_required", (
+                "the account did not report whether root access keys exist"
+            )
+        return [
+            ResourceFinding(
+                resource_id=account_id, resource_type="aws_account", verdict=verdict,
+                observed=observed, detail=detail,
             )
         ]
     raw = summary.get("AccountMFAEnabled")
@@ -570,6 +802,19 @@ def evaluate_access_key_rotation(
         ref = _key_ref(row)
         user = row.get("UserName")
         status = row.get("Status")
+        if status not in (_ACTIVE_KEY_STATUS, *_UNUSABLE_KEY_STATUSES):
+            # Not reported, or a value this code does not know: the key may be
+            # live, so it is not excused as unable to authenticate.
+            findings.append(
+                ResourceFinding(
+                    resource_id=ref,
+                    resource_type="iam_access_key",
+                    verdict="manual_review_required",
+                    observed=f"access key status {status!r} was not one AWS documents",
+                    detail={"UserName": user, "Status": status},
+                )
+            )
+            continue
         if status != _ACTIVE_KEY_STATUS:
             findings.append(
                 ResourceFinding(
@@ -951,6 +1196,16 @@ def evaluate_security_group_admin_ingress(
     findings: list[ResourceFinding] = []
     for group in rows:
         group_id = str(group.get("GroupId") or group.get("GroupName") or "unknown")
+        if not isinstance(group.get("IpPermissions"), list):
+            # AWS always answers IpPermissions, if only with []. Without it the
+            # rules were not read, and "no rules" would pass a group unseen.
+            findings.append(ResourceFinding(
+                resource_id=group_id, resource_type="aws_security_group",
+                verdict="manual_review_required",
+                observed="the group's inbound rules were not reported",
+                detail={"group_name": group.get("GroupName")},
+            ))
+            continue
         exposures = [
             exposure
             for permission in group.get("IpPermissions") or []
@@ -1211,8 +1466,532 @@ def evaluate_patch_compliance(
     return findings
 
 
+
+# ── evaluators for the checks ported from m365-docs-hub ──────────────────────
+
+
+#: The credential report's name for the root user's row. Root MFA is
+#: ``ROOT_MFA_ENABLED``'s question, read from the account summary.
+CREDENTIAL_REPORT_ROOT = "<root_account>"
+
+
+def evaluate_user_mfa(
+    rows: list[dict[str, Any]], *, account_id: str
+) -> list[ResourceFinding]:
+    """One finding per IAM user, from the credential report's CSV rows.
+
+    MFA guards console sign-in, so a user with no console password is
+    ``not_applicable`` here -- their access keys are the rotation check's
+    question. The report's cells are the strings ``"true"``/``"false"``;
+    anything else, missing included, is ``manual_review_required``, never
+    read as either. An empty report is not "no users": every report has the
+    root row, so empty means it was not read.
+    """
+    if not rows:
+        return _account_finding(
+            account_id, "manual_review_required", "the IAM credential report was not returned"
+        )
+    findings: list[ResourceFinding] = []
+    for r in rows:
+        user = r.get("user")
+        if user == CREDENTIAL_REPORT_ROOT:
+            continue
+        rid = str(r.get("arn") or user or "unknown")
+        password, mfa = r.get("password_enabled"), r.get("mfa_active")
+        detail = {"user": user, "password_enabled": password, "mfa_active": mfa,
+                  "report_generated": r.get("GeneratedTime")}
+        if password == "false":
+            verdict, observed = "not_applicable", "the user has no console password"
+        elif password == "true" and mfa == "true":
+            verdict, observed = "pass", "console password with an active MFA device"
+        elif password == "true" and mfa == "false":
+            verdict, observed = "fail", "console password with no active MFA device"
+        else:
+            verdict, observed = "manual_review_required", (
+                f"the report gave password_enabled={password!r}, mfa_active={mfa!r}"
+            )
+        findings.append(ResourceFinding(
+            resource_id=rid, resource_type="iam_user", verdict=verdict,
+            observed=observed, detail=detail,
+        ))
+    if not findings:
+        return _account_finding(
+            account_id, "not_applicable", "the account has no IAM users besides root"
+        )
+    return findings
+
+
+def _account_finding(
+    account_id: str, verdict: str, observed: str, **detail: Any
+) -> list[ResourceFinding]:
+    return [
+        ResourceFinding(
+            resource_id=account_id, resource_type="aws_account", verdict=verdict,
+            observed=observed, detail=detail,
+        )
+    ]
+
+
+def _records_everything(recorder: dict[str, Any]) -> bool:
+    group = recorder.get("recordingGroup") or {}
+    strategy = (group.get("recordingStrategy") or {}).get("useOnly")
+    return group.get("allSupported") is True or strategy == "ALL_SUPPORTED_RESOURCE_TYPES"
+
+
+def evaluate_config_recorder(
+    rows: list[dict[str, Any]], *, account_id: str
+) -> list[ResourceFinding]:
+    """Recording, all resource types, last delivery not failed.
+
+    The source counted a recorder's *existence* as "Config enabled". A recorder
+    that is stopped, or records three resource types, inventories nothing an
+    assessor can rely on, so both are failures that name what is wrong.
+    """
+    if not rows:
+        return _account_finding(
+            account_id, "fail", "no AWS Config recorder exists in this region", recorders=0
+        )
+    for r in rows:
+        if "recording" not in r:
+            continue
+        if r["recording"] is True and _records_everything(r) and (
+            str(r.get("lastStatus") or "").upper() != "FAILURE"
+        ):
+            return _account_finding(
+                account_id, "pass", f"recorder {r.get('name')!r} records every supported type",
+                recorder=r.get("name"),
+            )
+    if all("recording" not in r for r in rows):
+        return _account_finding(
+            account_id, "manual_review_required",
+            "the recorder's status could not be read", recorders=[r.get("name") for r in rows],
+        )
+    problems = []
+    for r in rows:
+        if r.get("recording") is not True:
+            problems.append(f"{r.get('name')}: not recording")
+        elif not _records_everything(r):
+            problems.append(f"{r.get('name')}: records only selected resource types")
+        else:
+            problems.append(f"{r.get('name')}: last delivery failed")
+    return _account_finding(account_id, "fail", "; ".join(problems), problems=problems)
+
+
+def evaluate_guardduty_enabled(
+    rows: list[dict[str, Any]], *, account_id: str
+) -> list[ResourceFinding]:
+    """Any detector ENABLED. Its Status is read; the source took the detector's
+    existence as "enabled", and a suspended detector detects nothing."""
+    if not rows:
+        return _account_finding(
+            account_id, "fail", "there is no GuardDuty detector in this region", detectors=0
+        )
+    statuses = {str(r.get("DetectorId")): r.get("Status") for r in rows}
+    if any(str(v).upper() == "ENABLED" for v in statuses.values()):
+        return _account_finding(account_id, "pass", "GuardDuty is enabled", detectors=statuses)
+    if any(v is None for v in statuses.values()):
+        return _account_finding(
+            account_id, "manual_review_required",
+            "a detector did not report its status", detectors=statuses,
+        )
+    return _account_finding(
+        account_id, "fail", "every GuardDuty detector is suspended", detectors=statuses
+    )
+
+
+_EXTERNAL_ACCESS_TYPES = frozenset({"ACCOUNT", "ORGANIZATION"})
+
+
+def evaluate_access_analyzer(
+    rows: list[dict[str, Any]], *, account_id: str
+) -> list[ResourceFinding]:
+    """An ACTIVE external-access analyzer. Unused-access analyzers answer a
+    different question and do not count."""
+    external = [r for r in rows if str(r.get("type") or "").upper() in _EXTERNAL_ACCESS_TYPES]
+    detail = {"analyzers": {str(r.get("name")): r.get("status") for r in external}}
+    if any(str(r.get("status") or "").upper() == "ACTIVE" for r in external):
+        return _account_finding(
+            account_id, "pass", "an external-access analyzer is active", **detail
+        )
+    if any(str(r.get("status") or "").upper() == "CREATING" for r in external):
+        return _account_finding(
+            account_id, "manual_review_required", "the analyzer is still being created", **detail
+        )
+    return _account_finding(
+        account_id, "fail",
+        "no active external-access analyzer" if external else "no external-access analyzer",
+        **detail,
+    )
+
+
+def evaluate_kms_key_rotation(
+    rows: list[dict[str, Any]], *, account_id: str
+) -> list[ResourceFinding]:
+    """One finding per customer-managed key.
+
+    AWS-managed keys rotate on AWS's schedule and are not rows here. A key that
+    is disabled, asymmetric, HMAC or imported cannot use automatic rotation, so
+    it is not_applicable rather than a failure nobody can fix. A key whose
+    policy denies the reader is manual_review_required, per key.
+    """
+    if not rows:
+        return _account_finding(
+            account_id, "not_applicable", "the account has no customer-managed KMS keys"
+        )
+    findings: list[ResourceFinding] = []
+    for k in rows:
+        arn = str(k.get("KeyArn") or k.get("KeyId") or "unknown")
+        detail = {f: k.get(f) for f in ("KeyState", "KeySpec", "Origin")}
+        if k.get("Unreadable"):
+            findings.append(ResourceFinding(
+                resource_id=arn, resource_type="aws_kms_key", verdict="manual_review_required",
+                observed=f"the key could not be read ({k['Unreadable']})", detail=detail,
+            ))
+            continue
+        if not k.get("KeyState"):
+            # A key whose state was not reported may be enabled; excusing it as
+            # "rotation does not apply" would skip a key nobody looked at.
+            findings.append(ResourceFinding(
+                resource_id=arn, resource_type="aws_kms_key", verdict="manual_review_required",
+                observed="the key did not report its state", detail=detail,
+            ))
+            continue
+        if (k.get("KeyState") != "Enabled" or k.get("KeySpec", "SYMMETRIC_DEFAULT")
+                != "SYMMETRIC_DEFAULT" or k.get("Origin", "AWS_KMS") != "AWS_KMS"):
+            findings.append(ResourceFinding(
+                resource_id=arn, resource_type="aws_kms_key", verdict="not_applicable",
+                observed="automatic rotation does not apply to this key", detail=detail,
+            ))
+            continue
+        if "KeyRotationEnabled" not in k:
+            findings.append(ResourceFinding(
+                resource_id=arn, resource_type="aws_kms_key", verdict="manual_review_required",
+                observed="the key did not report its rotation status", detail=detail,
+            ))
+            continue
+        on = k["KeyRotationEnabled"] is True
+        findings.append(ResourceFinding(
+            resource_id=arn, resource_type="aws_kms_key", verdict="pass" if on else "fail",
+            observed="automatic rotation is on" if on else "automatic rotation is off",
+            detail=detail,
+        ))
+    return findings
+
+
+def _redirects_to_https(actions: list[dict[str, Any]]) -> bool:
+    return bool(actions) and all(
+        a.get("Type") == "redirect"
+        and str((a.get("RedirectConfig") or {}).get("Protocol", "")).upper() == "HTTPS"
+        for a in actions
+    )
+
+
+def evaluate_elb_listeners_tls(
+    rows: list[dict[str, Any]], *, account_id: str
+) -> list[ResourceFinding]:
+    """One finding per listener.
+
+    HTTP that only redirects to HTTPS -- its default action and every rule --
+    passes: that is how TLS is enforced for a browser. TCP/UDP cannot be
+    judged from the load balancer (the payload may be TLS passed through), so
+    it is for review; the source failed every TCP listener as plaintext.
+    """
+    if not rows:
+        return _account_finding(account_id, "not_applicable", "the account has no load balancers")
+    findings: list[ResourceFinding] = []
+    for li in rows:
+        arn = str(li.get("ListenerArn") or "unknown")
+        proto = str(li.get("Protocol") or "").upper()
+        detail = {"protocol": proto, "port": li.get("Port"), "ssl_policy": li.get("SslPolicy"),
+                  "load_balancer": li.get("LoadBalancerArn")}
+        if proto in ("HTTPS", "TLS"):
+            verdict, observed = "pass", f"{proto} listener"
+        elif proto == "HTTP":
+            rules = li.get("Rules")
+            rule_actions = [a for r in (rules or []) for a in (r.get("Actions") or [])]
+            if _redirects_to_https(li.get("DefaultActions") or []) and rules is not None and (
+                not rule_actions or _redirects_to_https(rule_actions)
+            ):
+                verdict, observed = "pass", "HTTP listener that only redirects to HTTPS"
+            elif rules is None and _redirects_to_https(li.get("DefaultActions") or []):
+                verdict, observed = (
+                    "manual_review_required", "HTTP redirects by default; its rules were not read"
+                )
+            else:
+                verdict, observed = "fail", "HTTP listener serves traffic unencrypted"
+        elif proto in ("TCP", "UDP", "TCP_UDP"):
+            verdict, observed = (
+                "manual_review_required",
+                f"{proto} listener: encryption is decided by the payload, not the load balancer",
+            )
+        elif proto == "GENEVE":
+            verdict, observed = "not_applicable", "GENEVE listener (appliance traffic)"
+        else:
+            verdict, observed = "manual_review_required", "the listener reported no protocol"
+        findings.append(ResourceFinding(
+            resource_id=arn, resource_type="aws_lb_listener", verdict=verdict,
+            observed=observed, detail=detail,
+        ))
+    return findings
+
+
+def evaluate_waf_public_alb(
+    rows: list[dict[str, Any]], *, account_id: str
+) -> list[ResourceFinding]:
+    """One finding per internet-facing application load balancer."""
+    if not rows:
+        return _account_finding(
+            account_id, "not_applicable", "the account has no internet-facing application load "
+            "balancers",
+        )
+    findings: list[ResourceFinding] = []
+    for lb in rows:
+        arn = str(lb.get("LoadBalancerArn") or "unknown")
+        if lb.get("Unreadable"):
+            verdict, observed = "manual_review_required", (
+                f"the WAF association could not be read ({lb['Unreadable']})"
+            )
+        elif lb.get("WebACL"):
+            verdict, observed = "pass", f"web ACL {lb['WebACL']!r} is associated"
+        else:
+            verdict, observed = "fail", "no WAF web ACL is associated"
+        findings.append(ResourceFinding(
+            resource_id=arn, resource_type="aws_lb", verdict=verdict, observed=observed,
+            detail={"name": lb.get("LoadBalancerName")},
+        ))
+    return findings
+
+
+def evaluate_trail_bucket_object_lock(
+    rows: list[dict[str, Any]], *, account_id: str
+) -> list[ResourceFinding]:
+    """One finding per bucket CloudTrail writes to.
+
+    The buckets come from the trails, not a name pattern. A bucket in another
+    account (a central log archive) usually cannot be read from here, which is
+    manual_review_required, not a pass and not a failure.
+    """
+    if not rows:
+        return _account_finding(
+            account_id, "not_applicable", "no CloudTrail trail delivers to an S3 bucket"
+        )
+    findings: list[ResourceFinding] = []
+    for b in rows:
+        name = str(b.get("Bucket") or "unknown")
+        if b.get("Unreadable"):
+            findings.append(ResourceFinding(
+                resource_id=name, resource_type="aws_s3_bucket",
+                verdict="manual_review_required",
+                observed=f"the bucket could not be read ({b['Unreadable']}); it may be in "
+                "another account",
+                detail={},
+            ))
+            continue
+        lock = b.get("ObjectLockConfiguration") or {}
+        retention = (lock.get("Rule") or {}).get("DefaultRetention") or {}
+        enabled = str(lock.get("ObjectLockEnabled") or "") == "Enabled"
+        if enabled and retention:
+            verdict, observed = "pass", (
+                f"Object Lock {retention.get('Mode')} with default retention"
+            )
+        elif enabled:
+            verdict, observed = "fail", "Object Lock is on but no default retention is set"
+        else:
+            verdict, observed = "fail", "Object Lock is not configured"
+        findings.append(ResourceFinding(
+            resource_id=name, resource_type="aws_s3_bucket", verdict=verdict, observed=observed,
+            detail={"mode": retention.get("Mode"), "days": retention.get("Days"),
+                    "years": retention.get("Years")},
+        ))
+    return findings
+
+
+def evaluate_rds_storage_encrypted(
+    rows: list[dict[str, Any]], *, account_id: str
+) -> list[ResourceFinding]:
+    """One finding per database: ``StorageEncrypted`` read, never assumed."""
+    if not rows:
+        return _account_finding(account_id, "not_applicable", "the account runs no RDS instances")
+    findings: list[ResourceFinding] = []
+    for db in rows:
+        name = str(db.get("DBInstanceIdentifier") or "unknown")
+        status = str(db.get("DBInstanceStatus") or "").strip().lower()
+        detail = {"engine": db.get("Engine"), "kms_key": db.get("KmsKeyId")}
+        if status in _RDS_UNSETTLED_STATES:
+            verdict, observed = "not_applicable", f"not assessed while the instance is {status}"
+        elif "StorageEncrypted" not in db:
+            verdict, observed = (
+                "manual_review_required", "the instance did not report whether it is encrypted"
+            )
+        elif db["StorageEncrypted"] is True:
+            verdict, observed = "pass", "storage is encrypted"
+        else:
+            verdict, observed = "fail", "storage is not encrypted"
+        findings.append(ResourceFinding(
+            resource_id=name, resource_type="aws_db_instance", verdict=verdict,
+            observed=observed, detail=detail,
+        ))
+    return findings
+
+
+# ── evaluators: DoD impact level ─────────────────────────────────────────────
+
+_IL_LEVELS = ("IL2", "IL4", "IL5", "IL6")
+
+
+def _undeclared(account_id: str, level: str | None) -> list[ResourceFinding] | None:
+    if level not in _IL_LEVELS:
+        return _account_finding(
+            account_id, "not_applicable",
+            "the system declares no DoD impact level, so there is no level to judge against",
+        )
+    return None
+
+
+def evaluate_il_govcloud_partition(
+    rows: list[dict[str, Any]], *, account_id: str, dod_impact_level: str | None = None
+) -> list[ResourceFinding]:
+    """IL4/IL5 data stays in AWS GovCloud: SRG section 5.2 (location), and
+    AWS lists IL4/IL5 only for the GovCloud regions."""
+    undeclared = _undeclared(account_id, dod_impact_level)
+    if undeclared:
+        return undeclared
+    arn = str((rows[0] if rows else {}).get("Arn") or "")
+    partition = arn.split(":")[1] if arn.count(":") >= 2 else None
+    detail = {"partition": partition, "dod_impact_level": dod_impact_level}
+    if partition is None:
+        return _account_finding(
+            account_id, "manual_review_required", "the account's partition was not reported",
+            **detail,
+        )
+    if dod_impact_level == "IL2":
+        return _account_finding(
+            account_id, "not_applicable", "IL2 may run in either partition", **detail
+        )
+    if dod_impact_level == "IL6":
+        return _account_finding(
+            account_id, "manual_review_required",
+            "IL6 runs in the AWS Secret Region, which is not assessed from this connector",
+            **detail,
+        )
+    ok = partition == "aws-us-gov"
+    return _account_finding(
+        account_id, "pass" if ok else "fail",
+        f"the account is in {partition}" + ("" if ok else
+                                             f"; {dod_impact_level} requires AWS GovCloud (US)"),
+        **detail,
+    )
+
+
+def evaluate_il_service_scope(
+    rows: list[dict[str, Any]], *, account_id: str, dod_impact_level: str | None = None
+) -> list[ResourceFinding]:
+    """One finding per AWS service with resources in the account.
+
+    Only a service AWS lists with an empty cell at the level is a failure. A
+    service AWS does not list at all (Elastic Load Balancing, EC2 Auto Scaling)
+    or lists with its own text ("Independent Assessment") is a question for the
+    authorizing official -- review, never a finding nobody can defend.
+    """
+    from ...connectors import aws_service_scope as scope  # noqa: PLC0415
+
+    undeclared = _undeclared(account_id, dod_impact_level)
+    if undeclared:
+        return undeclared
+    assert dod_impact_level is not None
+    if not rows:
+        return _account_finding(
+            account_id, "manual_review_required",
+            "AWS Config reported no resources; is the recorder on?",
+        )
+    namespaces: dict[str, int] = {}
+    unread = 0
+    for r in rows:
+        parts = str(r.get("resourceType") or "").split("::")
+        if len(parts) >= 2 and parts[0] == "AWS":
+            namespaces[parts[1]] = namespaces.get(parts[1], 0) + int(r.get("count") or 0)
+        else:
+            unread += 1
+    source = scope.provenance()
+    findings: list[ResourceFinding] = []
+    if unread:
+        # Rows whose service cannot be told are not dropped: the service they
+        # count could be the one AWS does not authorize at this level.
+        findings.append(ResourceFinding(
+            resource_id=account_id, resource_type="aws_account",
+            verdict="manual_review_required",
+            observed=f"{unread} resource count(s) from AWS Config named no AWS resource type",
+            detail={"unread_rows": unread, "level": dod_impact_level},
+        ))
+    for ns in sorted(namespaces):
+        row = scope.row_for_namespace(ns)
+        detail = {"resources": namespaces[ns], "level": dod_impact_level, "source": source}
+        if row is None:
+            verdict, observed = "manual_review_required", (
+                f"{ns} is not listed on AWS's DoD SRG page; confirm its scope with the AO"
+            )
+        else:
+            status = scope.status_at(row, dod_impact_level)
+            detail["service"] = row["service"]
+            if status == "authorized":
+                verdict, observed = "pass", f"{row['service']} is authorized at {dod_impact_level}"
+            elif status == "not_in_scope":
+                verdict, observed = "fail", (
+                    f"{row['service']} is not listed by AWS as authorized at {dod_impact_level}"
+                )
+            else:
+                verdict, observed = "manual_review_required", (
+                    f"{row['service']} is listed with AWS's note rather than an authorization"
+                )
+        findings.append(ResourceFinding(
+            resource_id=f"{account_id}/{ns}", resource_type="aws_service", verdict=verdict,
+            observed=observed, detail=detail,
+        ))
+    return findings
+
+
+def evaluate_il_customer_keys(
+    rows: list[dict[str, Any]], *, account_id: str, dod_impact_level: str | None = None
+) -> list[ResourceFinding]:
+    """At IL5 and above, data at rest uses keys the mission owner controls
+    (SRG sections 5.10.6 and 5.11). One finding per resource read."""
+    undeclared = _undeclared(account_id, dod_impact_level)
+    if undeclared:
+        return undeclared
+    if dod_impact_level in ("IL2", "IL4"):
+        return _account_finding(
+            account_id, "not_applicable",
+            f"{dod_impact_level} does not require customer-managed keys",
+        )
+    if not rows:
+        return _account_finding(account_id, "not_applicable", "no data stores were found")
+    findings: list[ResourceFinding] = []
+    for r in rows:
+        rid = str(r.get("ResourceId") or "unknown")
+        detail = {"kind": r.get("ResourceType"), "key": r.get("KeyId"),
+                  "algorithm": r.get("Algorithm")}
+        if r.get("Unreadable"):
+            verdict, observed = "manual_review_required", f"could not be read ({r['Unreadable']})"
+        elif not r.get("Encrypted"):
+            verdict, observed = "fail", "not encrypted at rest"
+        elif r.get("KeyManager") == "CUSTOMER":
+            verdict, observed = "pass", "encrypted under a customer-managed KMS key"
+        elif r.get("KeyManager") == "AWS" or r.get("Algorithm") == "AES256":
+            verdict, observed = "fail", (
+                "encrypted under an AWS-owned or AWS-managed key, which the mission owner "
+                "does not control"
+            )
+        else:
+            verdict, observed = "manual_review_required", "the key's manager could not be read"
+        findings.append(ResourceFinding(
+            resource_id=rid, resource_type=str(r.get("ResourceType") or "aws_resource"),
+            verdict=verdict, observed=observed, detail=detail,
+        ))
+    return findings
+
 EVALUATORS: dict[str, Callable[..., list[ResourceFinding]]] = {
     ROOT_MFA_ENABLED.key: evaluate_root_mfa,
+    USER_MFA_ENABLED.key: evaluate_user_mfa,
     PASSWORD_POLICY.key: evaluate_password_policy,
     ACCESS_KEY_ROTATION.key: evaluate_access_key_rotation,
     CLOUDTRAIL_MULTI_REGION.key: evaluate_cloudtrail_multi_region,
@@ -1225,4 +2004,15 @@ EVALUATORS: dict[str, Callable[..., list[ResourceFinding]]] = {
     RDS_NOT_PUBLICLY_ACCESSIBLE.key: evaluate_rds_not_publicly_accessible,
     INSPECTOR_ENABLED.key: evaluate_inspector_enabled,
     PATCH_COMPLIANCE.key: evaluate_patch_compliance,
+    CONFIG_RECORDER.key: evaluate_config_recorder,
+    GUARDDUTY_ENABLED.key: evaluate_guardduty_enabled,
+    ACCESS_ANALYZER_ENABLED.key: evaluate_access_analyzer,
+    KMS_KEY_ROTATION.key: evaluate_kms_key_rotation,
+    ELB_LISTENERS_TLS.key: evaluate_elb_listeners_tls,
+    WAF_PUBLIC_ALB.key: evaluate_waf_public_alb,
+    TRAIL_BUCKET_OBJECT_LOCK.key: evaluate_trail_bucket_object_lock,
+    RDS_STORAGE_ENCRYPTED.key: evaluate_rds_storage_encrypted,
+    IL_GOVCLOUD_PARTITION.key: evaluate_il_govcloud_partition,
+    IL_SERVICE_SCOPE.key: evaluate_il_service_scope,
+    IL_CUSTOMER_KEYS.key: evaluate_il_customer_keys,
 }

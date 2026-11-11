@@ -259,6 +259,9 @@ def test_every_control_test_rollup_goes_through_the_one_attribution_rule() -> No
         "analytics/gaps.py": "orders a listing worst-first",
         "api/routes/waivers.py": "matches a waiver to one test",
         "ssp/completeness_query.py": "counts tests per SSP entry, not evidence",
+        "governance/audit_program.py": "orders the assessment schedule's listing",
+        "analytics/studio.py": "groups result rows by the test's primary control, "
+        "labelled so; it counts results, not evidence per control",
     }
     rule_names = {"non_passing_attribution", "pass_attribution"}
 

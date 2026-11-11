@@ -7,6 +7,7 @@ environment (same base.html + light theme, asset-version cache-busting).
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 from collections.abc import Sequence
 from datetime import UTC, date, datetime
@@ -21,8 +22,11 @@ from sqlalchemy.orm import selectinload
 
 from ...ai.cipher import CredentialStorageError
 from ...auth import Principal
+from ...config import get_settings
+from ...connectors import aws_identity, get_connector
 from ...connectors import credentials as connector_credentials
-from ...connectors import get_connector
+from ...connectors.aws import AwsGovCloudConnector
+from ...connectors.aws_inventory import sync_organization_inventory
 from ...connectors.credential_spec import (
     SPECS,
     IncompleteCredential,
@@ -31,9 +35,8 @@ from ...connectors.credential_spec import (
     spec_for,
 )
 from ...evidence import service as evidence_service
-from ...governance import control_tests, insights, personnel, tprm, trust_corroboration
+from ...governance import bus, control_tests, insights, personnel, tprm, trust_corroboration
 from ...governance import waivers as waiver_service
-from ...ingest import parse_scan, reconcile_findings
 from ...logging import get_logger
 from ...models import CaptureSnapshot, ScanIngestion, System, Task, Vendor
 from ...models_evidence import EvidenceObject
@@ -53,8 +56,10 @@ from ...models_people import AccessReview, Person
 from ...models_tprm import QuestionnaireResponse, VendorQuestionnaire
 from ...posture.checks import checks_for
 from ...posture.types import ResourceFinding
-from ..auth_deps import require_platform_admin, require_role, resolve_caller_org
+from ..audit import record_event
+from ..auth_deps import get_principal, require_platform_admin, require_role, resolve_caller_org
 from ..deps import get_session
+from . import scans as scans_api
 from .grc import (
     _emit_access_decision,
     _load_access_request,
@@ -433,13 +438,15 @@ async def connectors_create(
             f"this organization already has a {connector_type} connector; "
             "configure that one rather than adding a second",
         )
-    session.add(
-        ConnectorConfig(
-            organization_id=org,
-            name=name,
-            connector_type=connector_type,
-            environment=environment or None,
-        )
+    cfg = ConnectorConfig(
+        organization_id=org,
+        name=name,
+        connector_type=connector_type,
+        environment=environment or None,
+    )
+    session.add(cfg)
+    await connector_credentials.emit_connector_changed(
+        session, cfg, status_was=None, created=True, actor=_actor(request)
     )
     await session.commit()
     return RedirectResponse("/connectors", status_code=303)
@@ -492,10 +499,14 @@ async def connectors_sync(
     connector.credential = secret
 
     result = await connector.verify()
+    status_was = c.status
     if result.get("connected"):
         c.status = "configured"
         c.error_message = None
         c.last_sync = _now()
+        await connector_credentials.emit_connector_changed(
+            session, c, status_was=status_was, actor=_actor(request)
+        )
         await session.commit()
 
         # Scan straight away, and land on the gaps. Connecting a provider is
@@ -506,12 +517,15 @@ async def connectors_sync(
         scanned = await _scan_every_system(session, org, c.connector_type)
         if scanned:
             await session.commit()
-            return RedirectResponse("/dashboard?connected=1", status_code=303)
+            return RedirectResponse("/gaps?connected=1", status_code=303)
         return RedirectResponse(f"/connectors/{cfg_id}?tested=1", status_code=303)
 
     reason = str(result.get("reason") or "the provider did not say why")
     c.status = "error"
     c.error_message = reason[:2000]
+    await connector_credentials.emit_connector_changed(
+        session, c, status_was=status_was, actor=_actor(request)
+    )
     await session.commit()
     return RedirectResponse(f"/connectors/{cfg_id}?error={quote(reason)}", status_code=303)
 
@@ -554,8 +568,188 @@ async def connector_detail(
                 )
             ).scalars().all(),
             "scan_checks": len(checks_for(c.connector_type)),
+            "aws_role": _aws_role_panel(c) if c.connector_type == "aws_govcloud" else None,
         },
     )
+
+
+def _aws_role_panel(c: ConnectorConfig) -> dict[str, Any]:
+    """What a customer needs to create the role Concord assumes."""
+    settings = get_settings()
+    external_id = (c.config or {}).get("external_id")
+    brokers = {
+        "aws-us-gov": settings.aws_broker_arn_govcloud,
+        "aws": settings.aws_broker_arn_commercial,
+    }
+    actions = aws_identity.required_actions(
+        p for ck in checks_for("aws_govcloud") for p in ck.required_permissions
+    )
+    return {
+        "external_id": external_id,
+        "brokers": brokers,
+        "trust_policies": {
+            partition: aws_identity.pretty(aws_identity.trust_policy(arn, external_id))
+            for partition, arn in brokers.items()
+            if arn and external_id
+        },
+        "permissions_policy": aws_identity.pretty(aws_identity.permissions_policy(actions)),
+        "role_prefix": aws_identity.ROLE_NAME_PREFIX,
+    }
+
+
+@router.post("/connectors/{cfg_id}/aws-inventory")
+async def connectors_aws_inventory(
+    cfg_id: int,
+    request: Request,
+    system_id: int = Form(...),
+    session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(require_role("admin")),
+) -> RedirectResponse:
+    """Bind the AWS organization to a system and sync its accounts into that
+    system's inventory. ``objects_discovered`` becomes the number of accounts
+    actually read -- it used to be a fixed mock figure."""
+    org = _principal_org(request)
+    c = await session.get(ConnectorConfig, cfg_id)
+    if c is None or (org is not None and c.organization_id != org):
+        raise HTTPException(404, "connector not found")
+    if c.connector_type != "aws_govcloud" or c.organization_id is None:
+        raise HTTPException(404, "not an AWS connector")
+    target = await session.get(System, system_id)
+    if target is None or target.deleted_at is not None or (
+        target.organization_id != c.organization_id
+    ):
+        return RedirectResponse(
+            f"/connectors/{cfg_id}?error={quote('choose a system in this organization')}",
+            status_code=303,
+        )
+    credential = await connector_credentials.resolve_credential(
+        session, c.organization_id, c.connector_type
+    )
+    connector = get_connector(c.connector_type, credential)
+    if not isinstance(connector, AwsGovCloudConnector) or not connector.is_configured():
+        return RedirectResponse(
+            f"/connectors/{cfg_id}?error={quote('store a working AWS credential first')}",
+            status_code=303,
+        )
+    config = dict(c.config or {})
+    config["system_id"] = target.id
+    c.config = config
+    result = await sync_organization_inventory(
+        session, connector, system_id=target.id, org_id=c.organization_id
+    )
+    if result["seen"] or not result["indeterminate"]:
+        c.objects_discovered = result["seen"]
+        c.last_sync = datetime.now(UTC)
+    await record_event(
+        session,
+        actor=principal.email or "system",
+        action="aws_inventory_synced",
+        entity_type="connector",
+        entity_id=str(c.id),
+        diff={k: result[k] for k in ("seen", "created", "updated", "truncated",
+                                     "indeterminate")} | {"system_id": target.id},
+        organization_id=c.organization_id,
+    )
+    await session.commit()
+    if result["indeterminate"] and not result["seen"]:
+        reason = (
+            "the AWS organization could not be read with this credential "
+            f"({', '.join(result['indeterminate'][:3])}); a member account cannot list "
+            "its organization"
+        )
+        return RedirectResponse(f"/connectors/{cfg_id}?error={quote(reason)}", status_code=303)
+    return RedirectResponse(f"/connectors/{cfg_id}#aws-inventory", status_code=303)
+
+
+@router.post("/connectors/{cfg_id}/aws-permissions")
+async def connectors_aws_permissions(
+    cfg_id: int,
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(require_role("admin")),
+) -> RedirectResponse:
+    """Probe which of the AWS checks' actions this credential is allowed.
+
+    Read-only and stored on the connector (non-secret) so the page can show
+    it. ``missing`` only on a clear denial; anything else is ``unknown``.
+    """
+    org = _principal_org(request)
+    c = await session.get(ConnectorConfig, cfg_id)
+    if c is None or (org is not None and c.organization_id != org):
+        raise HTTPException(404, "connector not found")
+    if c.connector_type != "aws_govcloud" or c.organization_id is None:
+        raise HTTPException(404, "not an AWS connector")
+    credential = await connector_credentials.resolve_credential(
+        session, c.organization_id, c.connector_type
+    )
+    connector = get_connector(c.connector_type, credential)
+    if not isinstance(connector, AwsGovCloudConnector) or not connector.is_configured():
+        return RedirectResponse(
+            f"/connectors/{cfg_id}?error={quote('store a working AWS credential first')}",
+            status_code=303,
+        )
+    results = await asyncio.to_thread(connector.permission_check)
+    config = dict(c.config or {})
+    config["permission_check"] = {"at": datetime.now(UTC).isoformat(), "results": results}
+    c.config = config
+    await session.commit()
+    return RedirectResponse(f"/connectors/{cfg_id}#aws-permissions", status_code=303)
+
+
+@router.post("/connectors/{cfg_id}/aws-external-id")
+async def connectors_aws_external_id(
+    cfg_id: int,
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(require_role("admin")),
+) -> RedirectResponse:
+    """Generate this organization's External ID, or rotate it.
+
+    Rotation is deliberate and audited: every trust policy naming the old ID
+    stops working, so the connector is marked not ready until the customer
+    updates theirs. Never a form edit, and never a value the caller supplies.
+    """
+    org = _principal_org(request)
+    c = await session.get(ConnectorConfig, cfg_id)
+    if c is None or (org is not None and c.organization_id != org):
+        raise HTTPException(404, "connector not found")
+    if c.connector_type != "aws_govcloud":
+        raise HTTPException(404, "not an AWS connector")
+    config = dict(c.config or {})
+    previous = config.get("external_id")
+    form = await request.form()
+    if previous and form.get("confirm") != "rotate":
+        reason = quote("confirm the rotation to replace the External ID")
+        return RedirectResponse(f"/connectors/{cfg_id}?error={reason}", status_code=303)
+    config["external_id"] = aws_identity.new_external_id()
+    c.config = config
+    if previous:
+        if c.encrypted_credential is not None and c.organization_id is not None:
+            stored = await connector_credentials.resolve_credential(
+                session, c.organization_id, c.connector_type
+            )
+            if stored and stored.get("role_arn"):
+                await connector_credentials.set_credential(
+                    session, c.organization_id, c.connector_type, dict(stored),
+                    name=c.name, config=c,
+                )
+        status_was = c.status
+        c.status = "error"
+        c.error_message = "External ID rotated: update the role's trust policy, then test"
+        await connector_credentials.emit_connector_changed(
+            session, c, status_was=status_was, actor=_actor(request)
+        )
+    await record_event(
+        session,
+        actor=principal.email or "system",
+        action="aws_external_id_rotated" if previous else "aws_external_id_generated",
+        entity_type="connector",
+        entity_id=str(c.id),
+        diff={"previous_suffix": str(previous)[-6:] if previous else None},
+        organization_id=c.organization_id,
+    )
+    await session.commit()
+    return RedirectResponse(f"/connectors/{cfg_id}", status_code=303)
 
 
 # ── Control Tests ────────────────────────────────────────────────────────────
@@ -587,15 +781,16 @@ async def control_tests_create(
     session: AsyncSession = Depends(get_session),
 ) -> RedirectResponse:
     org = _principal_org(request)
-    session.add(
-        ControlTest(
-            organization_id=org,
-            control_id=control_id,
-            name=name,
-            method=method,
-            frequency=frequency or None,
-        )
+    test = ControlTest(
+        organization_id=org,
+        control_id=control_id,
+        name=name,
+        method=method,
+        frequency=frequency or None,
     )
+    session.add(test)
+    await session.flush()
+    await control_tests.emit_control_test_created(session, test, actor=_actor(request))
     await session.commit()
     return RedirectResponse("/control-tests", status_code=303)
 
@@ -714,7 +909,6 @@ async def control_test_detail(
             "viewer_email": getattr(principal, "email", None),
             "viewer_is_global": bool(getattr(principal, "is_global", False)),
             "can_approve": waiver_service.can_approve,
-            "error": request.query_params.get("error"),
         },
     )
 
@@ -1068,34 +1262,16 @@ async def scans_page(
 
 @router.post("/scans")
 async def scans_upload(
-    request: Request,
     system_id: int = Form(...),
     scanner: str = Form("auto"),
     file: UploadFile | None = None,
     session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(get_principal),
 ) -> RedirectResponse:
-    if file is None:
-        raise HTTPException(400, "a scan file is required")
-    data = await file.read()
-    if not data:
-        raise HTTPException(400, "uploaded scan file is empty")
-    resolved, findings = parse_scan(scanner, data, file.filename)
-    result = await reconcile_findings(
-        session, system_id=system_id, scanner=resolved, findings=findings
-    )
-    session.add(
-        ScanIngestion(
-            organization_id=_principal_org(request),
-            system_id=system_id,
-            scanner=resolved,
-            filename=file.filename,
-            findings_total=result.findings_total,
-            poams_created=result.created,
-            poams_updated=result.updated,
-            poams_reopened=result.reopened,
-            poams_closed=result.closed,
-            summary=result.as_dict(),
-        )
+    # The same ingest as POST /api/scans/ingest -- scope, size cap, 422 on a bad
+    # file, event and notification -- not a copy of it.
+    await scans_api.ingest_upload(
+        session, system_id=system_id, scanner=scanner, file=file, principal=principal
     )
     await session.commit()
     return RedirectResponse("/scans", status_code=303)
@@ -1308,6 +1484,8 @@ async def questionnaire_review(
     q.risk_rating = scored["rating"]
     vendor = await session.get(Vendor, q.vendor_id)
     if vendor is not None:
+        if vendor.risk_rating != scored["rating"]:
+            await tprm.emit_vendor_rated(session, vendor, scored["rating"], actor=_actor(request))
         vendor.risk_rating = scored["rating"]
         vendor.last_reviewed_on = q.reviewed_on
         if open_tasks and scored["flagged"]:
@@ -1423,14 +1601,79 @@ async def assurance_page(
     )
 
 
+#: The page draws at most this many nodes; above it, it asks for a filter.
+_GRAPH_NODE_LIMIT = 3000
+
+
+@router.get("/graph", response_class=HTMLResponse)
+async def graph_page(
+    request: Request,
+    system_id: str | None = None,
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """One system's assurance graph: every edge sourced, nothing inferred."""
+    from ...assurance import impact as assurance_impact  # noqa: PLC0415
+
+    # The picker's "Choose a system" option submits ``system_id=``: that is no
+    # system chosen, not a validation error. Anything else that is not an id
+    # names no system, which is a 404 like any other unknown id.
+    raw = (system_id or "").strip()
+    if not raw:
+        chosen: int | None = None
+    # 18 digits is plenty for a bigint id; a longer run is no id (and ``int()``
+    # raises past 4,300 digits, which was a 500).
+    elif raw.isascii() and raw.isdigit() and len(raw) <= 18:
+        chosen = int(raw)
+    else:
+        raise HTTPException(404, "System not found")
+    org = _principal_org(request)
+    # Deleted systems are excluded as everywhere else (DATA-04); a foreign or
+    # deleted id is a 404, never an empty graph that implies "no relationships".
+    sys_stmt = select(System).where(System.deleted_at.is_(None)).order_by(System.name)
+    if org is not None:
+        sys_stmt = sys_stmt.where(System.organization_id == org)
+    systems = (await session.execute(sys_stmt)).scalars().all()
+    selected = next((s for s in systems if s.id == chosen), None)
+    if chosen is not None and selected is None:
+        raise HTTPException(404, "System not found")
+    view = await assurance_impact.system_view(session, system=selected) if selected else None
+    labels = {n["id"]: n["label"] for n in view["nodes"]} if view else {}
+    node_types = sorted({n["entity_type"] for n in view["nodes"]}) if view else []
+    # ``owner_user_id`` is rarely recorded; a picker with only "Everyone" in
+    # it would offer a filter over nothing, so the page says so instead.
+    has_owners = view is not None and any(
+        (n.get("metadata") or {}).get("owners") for n in view["nodes"]
+    )
+    return templates.TemplateResponse(
+        request,
+        "graph.html",
+        {
+            "active": "graph",
+            "systems": systems,
+            "selected": selected,
+            "view": view,
+            "labels": labels,
+            "node_types": node_types,
+            "has_owners": has_owners,
+            "node_limit": _GRAPH_NODE_LIMIT,
+        },
+    )
+
+
 @router.post("/assurance/rebuild")
 async def assurance_rebuild(
-    request: Request, session: AsyncSession = Depends(get_session)
+    request: Request,
+    return_to: str = Form("assurance"),
+    system_id: int | None = Form(None),
+    session: AsyncSession = Depends(get_session),
 ) -> RedirectResponse:
     from ...assurance import builder as assurance_builder  # noqa: PLC0415
 
     await assurance_builder.rebuild(session, org_id=_principal_org(request))
     await session.commit()
+    # Only two fixed destinations: a free-form return URL would be an open redirect.
+    if return_to == "graph" and system_id is not None:
+        return RedirectResponse(f"/graph?system_id={int(system_id)}", status_code=303)
     return RedirectResponse("/assurance", status_code=303)
 
 
@@ -1475,6 +1718,15 @@ async def ai_agents_create_ui(
     session.add(agent)
     await session.flush()
     await risk_assess(session, agent, actor=_actor(request))
+    await bus.emit(  # the API's event, with the agent's own organization
+        session,
+        verb="created",
+        entity_type="ai_agent",
+        entity_id=agent.id,
+        summary=f"AI agent inventoried: {agent.name}",
+        org_id=agent.organization_id,
+        actor=_actor(request),
+    )
     await session.commit()
     return RedirectResponse("/ai-agents", status_code=303)
 
@@ -1600,12 +1852,25 @@ async def _portal_admin_context(
     from ...models_packages import AuthorizationPackage  # noqa: PLC0415
     from ...models_portal import ExternalPrincipal  # noqa: PLC0415
     from ...portal import current_engagement_ids, grant_status, list_grants  # noqa: PLC0415
+    from ...portal import requests as access_requests  # noqa: PLC0415
+    from ...portal.inventory import access_inventory  # noqa: PLC0415
 
     rows: list[dict[str, Any]] = []
     packages: list[Any] = []
     evidence: list[Any] = []
+    systems: list[Any] = []
+    cert_access: list[dict[str, Any]] = []
+    request_links: list[Any] = []
+    request_rows: list[dict[str, Any]] = []
     if org_id is not None:
         grants = await list_grants(session, org_id=org_id)
+        cert_access = await access_inventory(session, org_id=org_id)
+        request_links = await access_requests.list_links(session, org_id=org_id)
+        today = access_requests.us_today()
+        request_rows = [
+            access_requests.request_view(r, today)
+            for r in await access_requests.list_requests(session, org_id=org_id)
+        ]
         principals = {
             p.id: p
             for p in (
@@ -1646,6 +1911,15 @@ async def _portal_admin_context(
                 )
             ).scalars().all()
         )
+        systems = list(
+            (
+                await session.execute(
+                    select(System)
+                    .where(System.organization_id == org_id, System.deleted_at.is_(None))
+                    .order_by(System.name)
+                )
+            ).scalars().all()
+        )
     # The plaintext token, when present, comes straight from the in-memory
     # grant just issued in this same request — never from a query param — so
     # it never transits a URL (IA-09: the DB stores only the hash).
@@ -1653,7 +1927,12 @@ async def _portal_admin_context(
     # The form's kind options come from the one vocabulary, not a hard-coded list in
     # the template: a second copy is a second place for a typo to live.
     return {"active": "portaladmin", "org_id": org_id, "rows": rows,
-            "packages": packages, "evidence": evidence, "issued_link": issued_link,
+            "packages": packages, "evidence": evidence, "systems": systems,
+            "issued_link": issued_link, "cert_access": cert_access,
+            "request_links": request_links, "access_requests": request_rows,
+            "issued_request_link": None, "now_utc": datetime.now(UTC),
+            "fedramp_notice_target": access_requests.notice_target(),
+            "fedramp_notice_days": access_requests.notice_window(),
             "kinds": EXTERNAL_PRINCIPAL_KINDS}
 
 
@@ -1662,6 +1941,7 @@ async def portal_admin_page(
     request: Request,
     organization_id: int | None = None,
     session: AsyncSession = Depends(get_session),
+    _admin: Principal = Depends(require_role("admin")),
 ) -> HTMLResponse:
     # The server-rendered twin of ``portal.list_grants_endpoint``: the query
     # parameter used to win over the principal, so a tenant admin could render
@@ -1682,7 +1962,12 @@ async def portal_admin_create(
     label: str = Form(""),
     package_ids: list[int] = Form(default=[]),
     evidence_ids: list[int] = Form(default=[]),
+    certification_system_ids: list[int] = Form(default=[]),
     session: AsyncSession = Depends(get_session),
+    # The API's role: the auth gate refuses only viewers on ``/admin/*``
+    # posts, and a grant is a bearer credential into the org's package and
+    # certification data -- an editor the API refuses must not issue one here.
+    _admin: Principal = Depends(require_role("admin")),
 ) -> HTMLResponse:
     from ...portal import create_grant  # noqa: PLC0415
 
@@ -1692,7 +1977,8 @@ async def portal_admin_create(
     try:
         grant = await create_grant(
             session, org_id=org_id, principal_name=principal_name, kind=kind,
-            package_ids=package_ids, evidence_ids=evidence_ids, ttl_days=ttl_days,
+            package_ids=package_ids, evidence_ids=evidence_ids,
+            certification_system_ids=certification_system_ids, ttl_days=ttl_days,
             label=label or None, actor=_actor(request),
         )
     except ValueError as exc:  # a kind outside the vocabulary — the form offers only members
@@ -1715,6 +2001,7 @@ async def portal_admin_revoke(
     grant_id: int,
     organization_id: int = Form(...),
     session: AsyncSession = Depends(get_session),
+    _admin: Principal = Depends(require_role("admin")),  # as the API; see portal_admin_create
 ) -> RedirectResponse:
     from ...models_portal import ExternalAccessGrant  # noqa: PLC0415
     from ...portal import revoke_grant  # noqa: PLC0415
@@ -1807,7 +2094,7 @@ async def connectors_set_credential(
     secret = {
         field.name: str(form.get(field.name) or "").strip()
         for field in spec.fields
-        if str(form.get(field.name) or "").strip()
+        if not field.generated and str(form.get(field.name) or "").strip()
     }
     # Merge over what is already stored, so a partial edit is an edit and not
     # a silent wipe of the fields the form did not carry.
@@ -1816,6 +2103,8 @@ async def connectors_set_credential(
             session, org, cfg.connector_type
         )
         if existing:
+            if cfg.connector_type == "aws_govcloud":
+                existing = connector_credentials.without_other_aws_methods(existing, secret)
             secret = {**existing, **secret}
 
     config = dict(cfg.config or {})
@@ -1827,7 +2116,7 @@ async def connectors_set_credential(
 
     try:
         await connector_credentials.set_credential(
-            session, org, cfg.connector_type, secret, name=cfg.name, config=cfg
+            session, org, cfg.connector_type, secret, name=cfg.name, config=cfg, prove=True
         )
     except IncompleteCredential as exc:
         return RedirectResponse(
@@ -1878,15 +2167,22 @@ async def connectors_test_credential(
         )
 
     result = await connector.verify()
+    status_was = cfg.status
     if result.get("connected"):
         cfg.status = "configured"
         cfg.error_message = None
+        await connector_credentials.emit_connector_changed(
+            session, cfg, status_was=status_was, actor=_actor(request)
+        )
         await session.commit()
         return RedirectResponse(f"/connectors/{cfg_id}?tested=1", status_code=303)
 
     reason = str(result.get("reason") or "the provider did not say why")
     cfg.status = "error"
     cfg.error_message = reason[:2000]
+    await connector_credentials.emit_connector_changed(
+        session, cfg, status_was=status_was, actor=_actor(request)
+    )
     await session.commit()
     return RedirectResponse(f"/connectors/{cfg_id}?error={quote(reason)}", status_code=303)
 

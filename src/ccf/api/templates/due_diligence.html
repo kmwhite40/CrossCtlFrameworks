@@ -1,0 +1,69 @@
+{% extends "base.html" %}
+{% block title %}Due Diligence · Concord{% endblock %}
+{% block heading %}Due diligence{% endblock %}
+{% block subtitle %}A checklist per vendor. Applying the standard checklist creates requests to the vendor; an item counts only once someone records what was received and a reviewer accepts it.{% endblock %}
+{% block actions %}<a class="btn btn--secondary" href="/vendors"><i data-lucide="building-2"></i>Vendors</a>{% endblock %}
+{% block content %}
+{% if vendors %}
+<form method="get" action="/due-diligence" class="filters" style="margin-bottom:16px">
+  <select class="select" name="vendor_id" aria-label="Vendor"><option value="">All vendors</option>{% for v in vendors %}<option value="{{ v.id }}"{% if vendor_id == v.id %} selected{% endif %}>{{ v.name }}</option>{% endfor %}</select>
+  <button class="btn btn--secondary" type="submit"><i data-lucide="filter"></i>Show</button>
+</form>
+{% for v in shown %}{% set its = items.get(v.id, []) %}{% set s = summary[v.id] %}
+<section class="card" id="vendor-{{ v.id }}" style="margin-bottom:16px">
+  <div class="card__header">
+    <div class="card__title">{{ v.name }}</div>
+    <span class="dim">{% if s.required %}{{ s.accepted }} of {{ s.required }} required items accepted{% else %}no required items{% endif %}{% if s.overdue %} · <span class="chip chip--err">{{ s.overdue }} overdue</span>{% endif %}{% if s.awaiting_review %} · {{ s.awaiting_review }} awaiting review{% endif %}</span>
+  </div>
+  {% if its %}
+  <div class="table-wrap"><table>
+    <thead><tr><th>Item</th><th>Category</th><th>Required</th><th>Due</th><th>Status</th><th>Evidence</th><th>Reviewed</th>{% if can_request or can_review %}<th>Action</th>{% endif %}</tr></thead>
+    <tbody>{% for it in its %}<tr id="dd-{{ it.id }}">
+      <td>{{ it.item }}</td>
+      <td>{{ (it.category or '—') | replace('_', ' ') }}</td>
+      <td>{{ 'yes' if it.required else 'no' }}</td>
+      <td>{% if it.due_on %}<span class="{% if overdue(it, today) %}kanban__due--late{% endif %}">{{ it.due_on }}</span>{% else %}—{% endif %}</td>
+      <td><span class="chip {% if it.status == 'accepted' %}chip--ok{% elif it.status == 'rejected' %}chip--err{% elif it.status == 'received' %}chip--info{% elif it.status == 'not_applicable' %}chip--ghost{% else %}chip--warn{% endif %}">{{ it.status | replace('_', ' ') }}</span></td>
+      <td>{{ it.evidence_ref or '—' }}</td>
+      <td>{% if it.reviewed_by %}{{ it.reviewed_by }}{% if it.reviewed_at %}<div class="dim" style="font-size:12px">{{ it.reviewed_at.strftime('%Y-%m-%d') }}</div>{% endif %}{% else %}—{% endif %}</td>
+      {% if can_request or can_review %}<td>
+        {% if can_request and it.status in ('requested', 'rejected', 'received') %}
+        <form method="post" action="/due-diligence/items/{{ it.id }}/receive" class="row" style="gap:6px">
+          <input class="input" name="evidence_ref" required placeholder="Where the document is" aria-label="Evidence reference">
+          <button class="btn btn--ghost btn--sm" type="submit">Record received</button>
+        </form>
+        {% endif %}
+        {% if can_review %}
+        <form method="post" action="/due-diligence/items/{{ it.id }}/review" class="row" style="gap:6px">
+          <select class="select select--sm" name="decision" aria-label="Decision">{% for d in decisions %}<option value="{{ d }}">{{ d | replace('_', ' ') }}</option>{% endfor %}</select>
+          <button class="btn btn--ghost btn--sm" type="submit">Review</button>
+        </form>
+        {% endif %}
+      </td>{% endif %}
+    </tr>{% endfor %}</tbody>
+  </table></div>
+  {% else %}
+  <div class="card__body dim">No due-diligence items for this vendor yet.</div>
+  {% endif %}
+  {% if can_request %}
+  <div class="card__footer">
+    <form method="post" action="/due-diligence/{{ v.id }}/standard" class="filters">
+      <label class="field-group"><span class="label">Due</span><input class="input" type="date" name="due_on"></label>
+      <button class="btn btn--secondary" type="submit" title="Requests: {% for name, _ in checklist %}{{ name }}{% if not loop.last %}, {% endif %}{% endfor %}"><i data-lucide="list-checks"></i>Apply the standard checklist</button>
+    </form>
+    <form method="post" action="/due-diligence/{{ v.id }}/items" class="filters" style="margin-top:8px">
+      <input class="input" name="item" required placeholder="Another item to request" aria-label="Item">
+      <input class="input" name="category" placeholder="Category" aria-label="Category">
+      <label class="field-group"><span class="label">Due</span><input class="input" type="date" name="due_on"></label>
+      <select class="select" name="required" aria-label="Required"><option value="1">required</option><option value="0">optional</option></select>
+      <button class="btn btn--ghost" type="submit"><i data-lucide="plus"></i>Request</button>
+    </form>
+  </div>
+  {% endif %}
+</section>
+{% endfor %}
+<p class="dim">The standard checklist requests: {% for name, _ in checklist %}{{ name }}{% if not loop.last %}, {% endif %}{% endfor %}. Applying it again adds only what is missing and never resets a reviewed item.</p>
+{% else %}
+<div class="card empty-state"><i data-lucide="list-checks"></i><h2>No vendors recorded</h2><p>Due diligence is kept per vendor. Add a vendor first (<code>POST /api/vendors</code>), then apply the standard checklist to request its documents.</p></div>
+{% endif %}
+{% endblock %}

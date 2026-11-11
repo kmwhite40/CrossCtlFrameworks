@@ -169,7 +169,12 @@ async def test_auth_enforcement_rbac_and_tenant_isolation(auth_on: None) -> None
         assert (await c.get(f"/ssp/{proj['id']}", headers=hb)).status_code == 404
         assert (await c.get(f"/systems/{sys_a}", headers=hb)).status_code == 404
         # B cannot delete A's system (out of scope → 404, system survives).
-        assert (await c.delete(f"/api/systems/{sys_a}", headers=hb)).status_code == 404
+        # B's *admin*: B's viewer is refused any write by the auth gate, which
+        # would answer 403 before tenant scoping is ever reached.
+        _org_b, token_b_admin = await _mk_user("admin@b.test", "OrgB-Auth", "admin")
+        hb_admin = {"Authorization": f"Bearer {token_b_admin}"}
+        assert (await c.delete(f"/api/systems/{sys_a}", headers=hb)).status_code == 403
+        assert (await c.delete(f"/api/systems/{sys_a}", headers=hb_admin)).status_code == 404
         assert (await c.get(f"/api/systems/{sys_a}/summary", headers=ha)).status_code == 200
 
         # Login issues a session; /me reflects the principal.

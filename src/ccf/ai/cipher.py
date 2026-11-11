@@ -267,6 +267,12 @@ AAD_CREDENTIAL = b"ccf-cred"
 #: tag rather than returning the wrong plaintext.
 AAD_MFA = b"ccf-mfa"
 
+#: An organization's Slack/Teams alert channel URL (``org_notify_channels``).
+#: The URL is itself the credential -- anyone holding it can post -- so it gets
+#: its own context: a connector secret or TOTP seed lifted into that column
+#: fails the tag instead of being posted to.
+AAD_NOTIFY_CHANNEL = b"ccf-notify-channel"
+
 
 class KmsKeyProvider(KeyProvider):
     """KEK held by AWS KMS. The key material never enters this process.

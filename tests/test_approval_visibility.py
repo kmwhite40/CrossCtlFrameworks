@@ -70,14 +70,14 @@ async def test_poam_approval_reflects_onto_entity_payload_via_production_flow() 
         created = await c.post("/api/poams", json={"system_id": sys_id, "title": "Weak spot"})
         pid = created.json()["id"]
 
-        submitted = await c.post(f"/api/approvals/poam/{pid}/submit")
+        submitted = await c.post(f"/api/approvals/poam/{pid}/submit", json={"purpose": "close"})
         assert submitted.status_code == 200, submitted.text
         after_submit = await c.get(f"/api/poams/{pid}")
         assert after_submit.json()["approval_state"] == "submitted"
         # Not fabricating a terminal transition: status is untouched.
         assert after_submit.json()["status"] == "open"
 
-        approved = await c.post(f"/api/approvals/poam/{pid}/approve")
+        approved = await c.post(f"/api/approvals/poam/{pid}/approve", json={"purpose": "close"})
         assert approved.status_code == 200, approved.text
         assert approved.json()["state"] == "approved"
 
@@ -97,7 +97,7 @@ async def test_poam_rejection_reflects_onto_entity_payload() -> None:
     async with _client() as c:
         created = await c.post("/api/poams", json={"system_id": sys_id, "title": "Weak spot"})
         pid = created.json()["id"]
-        await c.post(f"/api/approvals/poam/{pid}/submit")
+        await c.post(f"/api/approvals/poam/{pid}/submit", json={"purpose": "close"})
         rejected = await c.post(f"/api/approvals/poam/{pid}/reject", json={"note": "insufficient"})
         assert rejected.status_code == 200, rejected.text
 
@@ -122,8 +122,8 @@ async def test_risk_approval_reflects_onto_entity_payload_via_production_flow() 
         rid = created.json()["id"]
         assert created.json()["approval_state"] == "draft"
 
-        await c.post(f"/api/approvals/risk/{rid}/submit")
-        approved = await c.post(f"/api/approvals/risk/{rid}/approve")
+        await c.post(f"/api/approvals/risk/{rid}/submit", json={"purpose": "accept"})
+        approved = await c.post(f"/api/approvals/risk/{rid}/approve", json={"purpose": "accept"})
         assert approved.status_code == 200, approved.text
 
         fetched = await c.get(f"/api/risks/{rid}")

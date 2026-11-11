@@ -24,6 +24,13 @@ def configure_logging() -> None:
         stream=sys.stdout,
         level=level,
     )
+    # httpx logs every request at INFO as ``HTTP Request: POST <full URL> ...``
+    # (httpcore at DEBUG, with the same URL). Concord posts to URLs whose path
+    # IS the credential -- a Slack/Teams incoming webhook, an organization's
+    # alert channel, a tenant's webhook -- so at INFO every delivery would write
+    # the secret into the log. Their warnings and errors still come through.
+    for noisy in ("httpx", "httpcore"):
+        logging.getLogger(noisy).setLevel(max(level, logging.WARNING))
 
     processors: list[structlog.types.Processor] = [
         structlog.contextvars.merge_contextvars,

@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Request access · Concord</title>
+  <link rel="stylesheet" href="/static/css/app.css" />
+  <style>
+    .portal { max-width: 640px; margin: 0 auto; padding: 40px 24px 80px; }
+    .portal__brand { font-weight: 700; font-size: 20px; letter-spacing: -.02em; }
+    .portal__sub { color: var(--text-secondary); font-size: 14px; margin: 4px 0 24px; }
+    .portal__card { background: var(--bg-elevated); border: 1px solid var(--border);
+      border-radius: var(--radius-lg); padding: 20px; margin-bottom: 20px; }
+    .portal__form { display: grid; gap: 12px; }
+    .portal__form label { display: grid; gap: 4px; font-size: 13px; color: var(--text-secondary); }
+    .portal__form textarea, .portal__form input {
+      width: 100%; padding: 10px 12px; border: 1px solid var(--border);
+      border-radius: var(--radius-md); background: var(--bg); color: var(--text); font: inherit; }
+    .portal__secret { font-family: var(--font-mono, monospace); word-break: break-all;
+      background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius-md);
+      padding: 10px 12px; }
+    .portal__error { color: var(--danger, #b42318); font-size: 14px; }
+  </style>
+</head>
+<body>
+  <main class="portal">
+    <div class="portal__brand">Concord</div>
+
+    {% if mode == "invalid" %}
+      <h1>This request link is not valid.</h1>
+      <p class="portal__sub">It may have been withdrawn. Ask the provider for a current link.</p>
+
+    {% elif mode == "form" %}
+      <h1>Request access to FedRAMP certification data</h1>
+      <p class="portal__sub">Federal agencies use this form to ask the provider for access. The provider reviews each request; you will get a receipt to check the decision and, if approved, to collect your access.</p>
+      {% if error %}<p class="portal__error">{{ error }}</p>{% endif %}
+      <form class="portal__card portal__form" method="post" action="/portal/request">
+        <input type="hidden" name="link" value="{{ link }}">
+        <label>Agency<input name="agency_name" required maxlength="255"></label>
+        <label>Your name<input name="requester_name" required maxlength="255"></label>
+        <label>Work email<input name="email" type="email" required maxlength="320"></label>
+        <label>Why you need access<textarea name="reason" rows="3" maxlength="4000"></textarea></label>
+        <fieldset style="border:0;padding:0;margin:0"><legend style="font-size:13px;color:var(--text-secondary)">Systems</legend>
+          {% for sid, name in systems.items() %}
+            <label style="display:flex;gap:8px;align-items:center"><input type="checkbox" name="system_ids" value="{{ sid }}" checked style="width:auto"> {{ name }}</label>
+          {% endfor %}
+        </fieldset>
+        <button class="btn btn--primary" type="submit">Send request</button>
+      </form>
+
+    {% elif mode == "submitted" %}
+      <h1>Request sent</h1>
+      <p class="portal__sub">Keep this receipt. It is shown only once, and it is the only way to check the decision and collect your access.</p>
+      <div class="portal__card">
+        <div class="portal__secret">{{ receipt }}</div>
+      </div>
+      <p class="portal__sub">Check the decision at <a href="/portal/request/status">/portal/request/status</a>.</p>
+
+    {% elif mode == "status" %}
+      <h1>Check your request</h1>
+      {% if error %}<p class="portal__error">{{ error }}</p>{% endif %}
+      {% if view %}
+        <div class="portal__card">
+          <p><strong>{{ view.agency_name }}</strong> · submitted {{ view.submitted_at.date() if view.submitted_at else '' }}</p>
+          {% if view.status == "pending" %}<p>Awaiting the provider's decision.</p>
+          {% elif view.status == "denied" %}<p>Denied{% if view.decided_at %} on {{ view.decided_at.date() }}{% endif %}.</p><p class="portal__sub">{{ view.decision_reason }}</p>
+          {% elif view.claimed %}<p>Approved, and access has already been collected with this receipt.</p>
+          {% elif not view.claimable %}<p>Approved, but not collected in time{% if view.claim_by %} (by {{ view.claim_by.date() }}){% endif %}. Ask the provider to approve a new request.</p>
+          {% else %}<p>Approved. Collect your access by {{ view.claim_by.date() if view.claim_by else '' }}; the link is shown once.</p>
+            <form method="post" action="/portal/request/claim">
+              <input type="hidden" name="receipt" value="{{ receipt }}">
+              <button class="btn btn--primary" type="submit">Collect access</button>
+            </form>
+          {% endif %}
+        </div>
+      {% else %}
+        <form class="portal__card portal__form" method="post" action="/portal/request/status">
+          <label>Receipt<input name="receipt" required maxlength="128" autocomplete="off"></label>
+          <button class="btn btn--primary" type="submit">Check</button>
+        </form>
+      {% endif %}
+
+    {% elif mode == "claimed" %}
+      <h1>Your access</h1>
+      <p class="portal__sub">This link is your credential and is shown only once. Open it now or store it securely; it also works as a bearer token for <span class="mono">/api/portal/certification-data</span>.</p>
+      <div class="portal__card"><div class="portal__secret">{{ portal_url }}</div></div>
+      <p><a class="btn btn--primary" href="{{ portal_url }}">Open the portal</a></p>
+    {% endif %}
+  </main>
+</body>
+</html>

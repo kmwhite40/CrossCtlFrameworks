@@ -48,6 +48,7 @@ from ...assessment.engine import jobs as engine_jobs
 from ...assessment.engine.calibration import compute_metrics
 from ...assessment.engine.service import (
     AcceptanceRefused,
+    ProposalDecidedError,
     ProposalError,
     RejectionRefused,
     accept_control_proposal,
@@ -63,6 +64,7 @@ from ...models_assessment_engine import (
 from ...models_prep import PrepUnit
 from ..auth_deps import get_principal
 from ..deps import get_session
+from .assessments import require_independent_recorder
 
 router = APIRouter(prefix="/api/assessment-engine", tags=["assessment-engine"])
 
@@ -116,6 +118,20 @@ async def _require_proposal(
     ):
         raise HTTPException(404, "control proposal not found")
     return proposal
+
+
+async def _require_decider(
+    session: AsyncSession, proposal: AssessmentControlProposal, principal: Principal
+) -> None:
+    """Accepting writes the assessment's result, and rejecting records its
+    correct finding: on a 3PAO, IG or audit assessment either is the assessor's
+    determination, refused to anyone else exactly as a result written by hand
+    is (``assessments.require_independent_recorder``). Without it a control
+    owner could accept the engine's ``satisfied`` on their own control."""
+    assessment = await session.get(Assessment, proposal.assessment_id)
+    if assessment is None:
+        raise HTTPException(404, "control proposal not found")
+    require_independent_recorder(assessment, principal)
 
 
 async def _citations(
@@ -264,6 +280,8 @@ async def create_proposal(
             assessment_id=body.assessment_id,
             control_identifier=body.control_identifier,
         )
+    except ProposalDecidedError as exc:
+        raise HTTPException(409, str(exc)) from exc
     except ProposalError as exc:
         raise HTTPException(404, "assessment not found") from exc
     await session.commit()
@@ -338,6 +356,7 @@ def _result_out(result: AssessmentControlResult) -> dict[str, Any]:
 @router.post("/proposals/{proposal_id}/accept")
 async def accept_proposal(
     proposal_id: int = Path(ge=1, le=_MAX_INT64),
+    override_not_applicable: bool = False,
     session: AsyncSession = Depends(get_session),
     principal: Principal = Depends(get_principal),
 ) -> dict[str, Any]:
@@ -350,9 +369,11 @@ async def accept_proposal(
     a 500: the request is understood and rejected, not a server fault.
     """
     proposal = await _require_proposal(session, proposal_id, principal)
+    await _require_decider(session, proposal, principal)
     try:
         result = await accept_control_proposal(
-            session, proposal.id, accepted_by=principal.email
+            session, proposal.id, accepted_by=principal.email,
+            override_not_applicable=override_not_applicable,
         )
     except AcceptanceRefused as exc:
         raise HTTPException(409, str(exc)) from exc
@@ -394,6 +415,7 @@ async def reject_proposal(
     docstring for why.
     """
     proposal = await _require_proposal(session, proposal_id, principal)
+    await _require_decider(session, proposal, principal)
     try:
         rejected = await reject_control_proposal(
             session,

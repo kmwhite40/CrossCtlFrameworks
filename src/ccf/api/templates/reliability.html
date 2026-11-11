@@ -25,6 +25,30 @@
   </div>
 </section>
 
+{% if failed_consumers %}
+<section class="card" style="margin-bottom:16px">
+  <div class="card__body">
+    <div class="card__title">Dead-lettered event jobs</div>
+    <table class="data">
+      <thead><tr><th>Consumer</th><th>Failed jobs</th><th></th></tr></thead>
+      <tbody>
+      {% for consumer, n in failed_consumers %}
+        <tr>
+          <td><code>{{ consumer }}</code></td>
+          <td>{{ n }}</td>
+          <td>
+            <form method="post" action="/admin/reliability/outbox/{{ consumer }}/requeue">
+              <button class="btn" type="submit">Requeue</button>
+            </form>
+          </td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endif %}
+
 <section class="card">
   <div class="card__body">
     <table class="data">

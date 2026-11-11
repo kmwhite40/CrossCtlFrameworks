@@ -1,0 +1,67 @@
+{% extends "base.html" %}
+{% block title %}Governance Committees · Concord{% endblock %}
+{% block heading %}Governance committees{% endblock %}
+{% block subtitle %}Each committee's charter, chair, members and meetings. An open action is a decision recorded in a meeting's minutes with a due date and not yet closed.{% endblock %}
+{% block content %}
+<section class="kpi-grid kpi-grid--4">
+  <div class="kpi"><span class="kpi__label">Committees</span><span class="kpi__value">{{ rows | length }}</span><span class="kpi__meta">{{ rows | selectattr('committee.active') | list | length }} active</span></div>
+  <div class="kpi"><span class="kpi__label">Meetings recorded</span><span class="kpi__value">{{ rows | sum(attribute='meetings') }}</span></div>
+  <div class="kpi"><span class="kpi__label">Open actions</span><span class="kpi__value">{{ actions | length }}</span><span class="kpi__meta">decisions with a due date, not closed</span></div>
+  <div class="kpi"><span class="kpi__label">Overdue actions</span><span class="kpi__value{% if overdue %} kpi__value--danger{% endif %}">{{ overdue }}</span><span class="kpi__meta">of {{ actions | length }} open</span></div>
+</section>
+
+<article class="card panel">
+  <header class="panel__head"><h2 class="panel__title">Committees</h2></header>
+  {% if rows %}
+  <div class="table-wrap"><table class="data">
+    <thead><tr><th>Committee</th><th>Chair</th><th>Cadence</th><th>Members</th><th>Meetings</th><th>Last held</th><th>Open actions</th></tr></thead>
+    <tbody>{% for r in rows %}<tr id="committee-{{ r.committee.id }}" data-members="{{ r.members }}" data-open="{{ r.open_actions }}">
+      <td><a href="/committees/{{ r.committee.id }}"><strong>{{ r.committee.name }}</strong></a>{% if not r.committee.active %} <span class="chip chip--ghost">inactive</span>{% endif %}</td>
+      <td>{{ r.chair or '—' }}</td>
+      <td>{{ (r.committee.cadence or '—') | replace('_', ' ') }}</td>
+      <td class="mono">{{ r.members }}</td>
+      <td class="mono">{{ r.meetings }}</td>
+      <td>{{ r.last_held or 'none recorded' }}</td>
+      <td class="mono">{{ r.open_actions }}</td>
+    </tr>{% endfor %}</tbody>
+  </table></div>
+  {% else %}
+  <div class="empty-state">
+    <h2>No committees yet</h2>
+    <p>Concord has no record of this organization's governance bodies. {% if can_admin %}Add the first committee below with its charter and chair; members and meetings are recorded on its page.{% else %}An administrator can add committees here.{% endif %}</p>
+  </div>
+  {% endif %}
+</article>
+
+{% if actions %}
+<article class="card panel">
+  <header class="panel__head"><h2 class="panel__title">Open actions</h2><span class="panel__hint">earliest due first</span></header>
+  <ul class="feed">
+    {% for a in actions %}
+    <li class="feed__item">
+      <span class="chip {% if a.overdue %}chip--err{% else %}chip--ghost{% endif %}">{% if a.overdue %}overdue{% else %}open{% endif %}</span>
+      <a class="feed__main" href="/committees/{{ a.committee_id }}#meeting-{{ a.meeting.id }}"><span class="feed__title">{{ a.text }}</span><span class="feed__meta">{{ a.committee }} · meeting of {{ a.meeting.held_on }} · owner {{ a.owner or 'not named' }}</span></a>
+      <span class="feed__date{% if a.overdue %} feed__date--late{% endif %}">due {{ a.due_on }}</span>
+    </li>
+    {% endfor %}
+  </ul>
+</article>
+{% endif %}
+
+{% if can_admin %}
+<article class="card panel">
+  <header class="panel__head"><h2 class="panel__title">Add a committee</h2></header>
+  <form method="post" action="/committees" class="card__body filters">
+    <div class="field-group"><label class="label" for="c-name">Name</label><input id="c-name" class="input" name="name" required maxlength="255"></div>
+    <div class="field-group"><label class="label" for="c-cadence">Cadence</label>
+      <select id="c-cadence" class="select" name="cadence"><option value="">— not set —</option>{% for c in cadences %}<option value="{{ c }}">{{ c | replace('_', ' ') }}</option>{% endfor %}</select></div>
+    <div class="field-group"><label class="label" for="c-chair">Chair</label>
+      <select id="c-chair" class="select" name="chair_user_id"><option value="">— none —</option>
+        {% for u in users %}<option value="{{ u.id }}">{{ u.full_name or u.email }}</option>{% endfor %}
+      </select></div>
+    <div class="field-group" style="grid-column:1/-1"><label class="label" for="c-charter">Charter</label><textarea id="c-charter" class="input" name="charter" rows="3"></textarea></div>
+    <button class="btn btn--primary" type="submit">Add committee</button>
+  </form>
+</article>
+{% endif %}
+{% endblock %}

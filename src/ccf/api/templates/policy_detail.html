@@ -1,0 +1,89 @@
+{% extends "base.html" %}
+{% block title %}{{ p.name }} · Policies · Concord{% endblock %}
+{% block heading %}{{ p.name }}{% endblock %}
+{% block subtitle %}
+  <p class="page__subtitle"><a href="/policies">Policies &amp; plans</a> · {{ p.category or '' }}{% if template %} · from the {{ template.title }} template{% endif %}</p>
+{% endblock %}
+{% block content %}
+
+{% if error %}<div class="note note--err" style="margin-bottom:16px">{{ error }}</div>{% endif %}
+
+<div class="cols-4" style="margin-bottom:16px">
+  <div class="kpi"><div class="kpi__label">Status</div><div class="kpi__value">{{ 'in force' if p.status=='active' else p.status }}</div></div>
+  <div class="kpi"><div class="kpi__label">Versions</div><div class="kpi__value">{{ versions|length }}</div></div>
+  <div class="kpi"><div class="kpi__label">Next review</div><div class="kpi__value">{{ p.next_review_on or '—' }}</div></div>
+  <div class="kpi"><div class="kpi__label">Acknowledged (in force)</div><div class="kpi__value">{% if p.active_version_id %}{{ attest_counts.get(p.active_version_id, 0) }}{% else %}<span class="dim">—</span>{% endif %}</div></div>
+</div>
+
+{% if p.status == 'active' and p.active_version_id %}
+<section class="card" style="margin-bottom:16px">
+  <div class="card__body filters">
+    {% if attested %}<span class="chip chip--ok">You have acknowledged the version in force</span>
+    {% else %}<form method="post" action="/policies/{{ p.id }}/versions/{{ p.active_version_id }}/attest"><button class="btn btn--primary" type="submit">I have read and accept the version in force</button></form>{% endif %}
+  </div>
+</section>
+{% endif %}
+
+{% if template %}
+<section class="card" style="margin-bottom:16px">
+  <div class="card__header"><div class="card__title">Organization-defined values</div>
+    <span class="dim" style="font-size:13px">saving renders a new version; a version with a blank value cannot be put in force</span></div>
+  <form class="card__body" method="post" action="/policies/{{ p.id }}/parameters">
+    <label class="dim" style="display:block;margin-bottom:12px">Document owner
+      <select class="select" name="owner_user_id">
+        <option value="">— none —</option>
+        {% for u in owners %}<option value="{{ u.id }}" {% if p.owner_user_id==u.id %}selected{% endif %}>{{ u.full_name or u.email }}</option>{% endfor %}
+      </select></label>
+    {% for prm in params %}
+    <label style="display:block;margin-bottom:10px"><strong>{{ prm.label }}</strong>
+      {% if prm.hint %}<div class="dim" style="font-size:12px">{{ prm.hint }}</div>{% endif %}
+      <input class="input" name="param:{{ prm.key }}" value="{{ prm.value }}" style="width:100%"></label>
+    {% endfor %}
+    <button class="btn btn--primary" type="submit">Save and render</button>
+  </form>
+</section>
+{% endif %}
+
+<section class="card" style="margin-bottom:16px">
+  <div class="card__header"><div class="card__title">Versions</div>
+    <span class="dim" style="font-size:13px">a version is reviewed, then put in force; the reviewer must not be its author</span></div>
+  {% if versions %}
+  <div class="table-wrap"><table class="data">
+    <thead><tr><th>Version</th><th>Rendered</th><th>Review</th><th>Unset values</th><th>SHA-256</th><th>Actions</th></tr></thead>
+    <tbody>{% for v in versions %}{% set st = states.get(v.id|string, 'draft') %}<tr>
+      <td><strong>{{ v.version }}</strong>{% if p.active_version_id == v.id %} <span class="chip chip--ok">in force</span>{% endif %}</td>
+      <td class="dim" style="font-size:12px">{{ v.created_at.date() if v.created_at else '—' }} · {{ v.created_by or '—' }}</td>
+      <td><span class="chip {% if st=='approved' %}chip--ok{% elif st=='rejected' %}chip--err{% elif st=='submitted' %}chip--warn{% else %}chip--ghost{% endif %}">{{ 'not submitted' if st=='draft' else st }}</span></td>
+      <td>{% if v.unresolved_parameters %}<span class="chip chip--warn" title="{{ v.unresolved_parameters|join(', ') }}">{{ v.unresolved_parameters|length }}</span>{% else %}<span class="dim">none</span>{% endif %}</td>
+      <td class="dim mono" style="font-size:11px">{{ (v.body_sha256 or '—')[:16] }}</td>
+      <td class="filters">
+        <a class="btn btn--sm btn--ghost" href="/api/policies/{{ p.id }}/versions/{{ v.id }}/document?fmt=docx">DOCX</a>
+        <a class="btn btn--sm btn--ghost" href="/api/policies/{{ p.id }}/versions/{{ v.id }}/document?fmt=md">Markdown</a>
+        {% if p.status != 'retired' and p.active_version_id != v.id %}
+          {% if st in ('draft','rejected') %}
+          <form method="post" action="/policies/{{ p.id }}/versions/{{ v.id }}/submit"><button class="btn btn--sm btn--ghost" type="submit">Submit for review</button></form>
+          {% elif st == 'submitted' %}
+          <form method="post" action="/policies/{{ p.id }}/versions/{{ v.id }}/approve"><button class="btn btn--sm btn--primary" type="submit">Approve</button></form>
+          <form method="post" action="/policies/{{ p.id }}/versions/{{ v.id }}/reject" class="filters"><input class="input" name="note" placeholder="Why"><button class="btn btn--sm btn--ghost" type="submit">Reject</button></form>
+          {% endif %}
+          <form method="post" action="/policies/{{ p.id }}/versions/{{ v.id }}/activate"><button class="btn btn--sm {% if st=='approved' %}btn--primary{% else %}btn--ghost{% endif %}" type="submit">Put in force</button></form>
+        {% endif %}
+      </td>
+    </tr>{% endfor %}</tbody>
+  </table></div>
+  {% else %}
+  <div class="card__body"><p class="dim">No versions yet.</p></div>
+  {% endif %}
+</section>
+
+{% if latest and latest.body %}
+<section class="card" style="margin-bottom:16px">
+  <div class="card__header"><div class="card__title">Version {{ latest.version }} text</div></div>
+  <div class="card__body"><pre style="white-space:pre-wrap;font-family:inherit;font-size:13px">{{ latest.body }}</pre></div>
+</section>
+{% endif %}
+
+{% if p.status != 'retired' %}
+<form method="post" action="/policies/{{ p.id }}/retire"><button class="btn btn--sm btn--ghost" type="submit">Retire this document</button></form>
+{% endif %}
+{% endblock %}

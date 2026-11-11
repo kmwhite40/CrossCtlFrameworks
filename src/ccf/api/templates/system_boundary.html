@@ -190,6 +190,77 @@
   {% else %}<div class="card__body dim" style="text-align:center;padding:32px">No interconnections recorded yet.</div>{% endif %}
 </section>
 
+{# ── Ports, protocols & services ─────────────────────────────────────── #}
+<section class="card" style="margin-bottom:16px">
+  <div class="card__header">
+    <div class="card__title">Ports, protocols &amp; services</div>
+    <span class="dim" style="font-size:13px">{{ ports | length }}</span>
+  </div>
+  <form class="card__body filters" id="port-form">
+    <select class="select" name="protocol" aria-label="Protocol" required>
+      <option value="">Protocol…</option>
+      {% for p in pps_protocols %}<option value="{{ p }}">{{ p|upper }}</option>{% endfor %}
+    </select>
+    <input aria-label="Port or range" class="input" name="port" placeholder="443 or 49152-65535" />
+    <input aria-label="Service" class="input" name="service" placeholder="Service (e.g. HTTPS)" required />
+    <select class="select" name="direction" aria-label="Direction" required>
+      <option value="">Direction…</option>
+      {% for d in pps_directions %}<option value="{{ d }}">{{ d }}</option>{% endfor %}
+    </select>
+    <input aria-label="Purpose" class="input" name="purpose" placeholder="Purpose" />
+    <input aria-label="Used by" class="input" name="used_by" placeholder="Used by" />
+    <button class="btn btn--primary" type="submit"><i data-lucide="plus"></i> Add</button>
+  </form>
+  {% if ports %}
+  <div class="table-wrap"><table class="data">
+    <thead><tr><th>Protocol</th><th>Port</th><th>Service</th><th>Direction</th><th>Purpose</th><th>Used by</th></tr></thead>
+    <tbody>{% for r in ports %}<tr>
+      <td><span class="chip">{{ r.protocol|upper }}</span></td>
+      <td class="mono">{{ r.port or '—' }}</td>
+      <td><strong>{{ r.service }}</strong></td>
+      <td class="dim">{{ r.direction }}</td>
+      <td class="dim">{{ r.purpose or '—' }}</td>
+      <td class="dim">{{ r.used_by or '—' }}</td>
+    </tr>{% endfor %}</tbody>
+  </table></div>
+  {% else %}<div class="card__body dim" style="text-align:center;padding:32px">No ports, protocols or services recorded yet.</div>{% endif %}
+</section>
+
+{# ── Cryptographic modules ───────────────────────────────────────────── #}
+<section class="card" style="margin-bottom:16px">
+  <div class="card__header">
+    <div class="card__title">Cryptographic modules</div>
+    <span class="dim" style="font-size:13px">validation status is as recorded here; "validated" needs a CMVP certificate number, linked to NIST's record</span>
+  </div>
+  <form class="card__body filters" id="crypto-form">
+    <input aria-label="Module name" class="input" name="module_name" placeholder="Module name" required />
+    <input aria-label="Vendor" class="input" name="vendor" placeholder="Vendor" />
+    <input aria-label="Version" class="input" name="module_version" placeholder="Version" />
+    <select class="select" name="validation_status" aria-label="Validation status" required>
+      <option value="">Validation…</option>
+      {% for st in crypto_statuses %}<option value="{{ st }}">{{ st|replace('_',' ') }}</option>{% endfor %}
+    </select>
+    <input aria-label="CMVP certificate number" class="input" name="cmvp_certificate" placeholder="CMVP cert #" />
+    <select class="select" name="usage" aria-label="Usage" required>
+      <option value="">Used for…</option>
+      {% for u in crypto_usages %}<option value="{{ u }}">{{ u|replace('_',' ') }}</option>{% endfor %}
+    </select>
+    <button class="btn btn--primary" type="submit"><i data-lucide="plus"></i> Add module</button>
+  </form>
+  {% if crypto %}
+  <div class="table-wrap"><table class="data">
+    <thead><tr><th>Module</th><th>Vendor / version</th><th>Validation</th><th>Certificate</th><th>Used for</th></tr></thead>
+    <tbody>{% for m in crypto %}<tr>
+      <td><strong>{{ m.module_name }}</strong></td>
+      <td class="dim">{{ m.vendor or '—' }} {{ m.module_version or '' }}</td>
+      <td><span class="chip {% if m.validation_status=='validated' %}chip--ok{% elif m.validation_status=='not_validated' %}chip--err{% else %}chip--warn{% endif %}">{{ m.validation_status|replace('_',' ') }}</span></td>
+      <td>{% if m.cmvp_certificate %}<a href="{{ cmvp_url.format(n=m.cmvp_certificate) }}" target="_blank" rel="noopener noreferrer">#{{ m.cmvp_certificate }}</a>{% else %}<span class="dim">—</span>{% endif %}</td>
+      <td class="dim">{{ m.usage|replace('_',' ') }}</td>
+    </tr>{% endfor %}</tbody>
+  </table></div>
+  {% else %}<div class="card__body dim" style="text-align:center;padding:32px">No cryptographic modules recorded yet.</div>{% endif %}
+</section>
+
 <script>
 function attachBoundaryForm(formId, url) {
   const form = document.getElementById(formId);
@@ -204,14 +275,19 @@ function attachBoundaryForm(formId, url) {
       headers: {'content-type': 'application/json'},
       body: JSON.stringify(body),
     });
-    if (r.ok) location.reload();
-    else if (window.toast) window.toast('Failed to save — check the required fields');
+    if (r.ok) { location.reload(); return; }
+    // Say why: a refusal with no reason is undiagnosable.
+    let reason = 'check the required fields';
+    try { const j = await r.json(); if (j && j.detail) reason = typeof j.detail === 'string' ? j.detail : JSON.stringify(j.detail); } catch (_) {}
+    if (window.toast) window.toast('Not saved: ' + reason); else alert('Not saved: ' + reason);
   });
 }
 attachBoundaryForm('component-form', '/api/systems/{{ system.id }}/boundary/components');
 attachBoundaryForm('inventory-form', '/api/systems/{{ system.id }}/boundary/inventory');
 attachBoundaryForm('infotype-form', '/api/systems/{{ system.id }}/boundary/information-types');
 attachBoundaryForm('interconnection-form', '/api/systems/{{ system.id }}/boundary/interconnections');
+attachBoundaryForm('port-form', '/api/systems/{{ system.id }}/boundary/ports');
+attachBoundaryForm('crypto-form', '/api/systems/{{ system.id }}/boundary/crypto-modules');
 if (window.lucide) lucide.createIcons();
 </script>
 

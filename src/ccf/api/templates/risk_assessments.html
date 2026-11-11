@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+{% block title %}Risk Assessments · Concord{% endblock %}
+{% block heading %}Risk assessments{% endblock %}
+{% block subtitle %}The quantitative register: annualized loss expectancy per risk, from each risk's latest quantitative assessment, and recent assessments.{% endblock %}
+{% block actions %}<a class="btn btn--secondary" href="/risks"><i data-lucide="list"></i>Risk register</a>{% endblock %}
+{% macro money(v) -%}{{ '{:,.2f}'.format(v) if v is not none else '—' }}{%- endmacro %}
+{% block content %}
+<section class="kpi-grid kpi-grid--4">
+  <div class="kpi" title="Sum of the latest ALE of each risk that has one; not-closed risks only">
+    <span class="kpi__label"><i data-lucide="calculator"></i><span>Total ALE</span></span>
+    <span class="kpi__value">{{ money(total_ale) }}</span>
+    <span class="kpi__meta">over {{ with_ale }} of {{ rows | length }} risk{{ 's' if rows|length != 1 }} with a quantitative assessment</span>
+  </div>
+  <div class="kpi">
+    <span class="kpi__label"><span>Without an ALE</span></span>
+    <span class="kpi__value">{{ rows | length - with_ale }}</span>
+    <span class="kpi__meta">not in the total</span>
+  </div>
+</section>
+
+<article class="card panel">
+  <header class="panel__head"><h2 class="panel__title">Quantitative register</h2><span class="panel__hint">{{ rows | length }} risk{{ 's' if rows|length != 1 }} not closed</span></header>
+  {% if rows %}
+  <div class="table-wrap" style="border:none;box-shadow:none;border-radius:0"><table>
+    <thead><tr><th>Risk</th><th>Register</th><th>System</th><th>Assessed</th><th title="Single-loss expectancy">SLE</th><th title="Annual rate of occurrence">ARO</th><th title="SLE × ARO">ALE</th></tr></thead>
+    <tbody>{% for x in rows %}{% set r = x.risk %}{% set q = x.q %}<tr id="qrisk-{{ r.id }}">
+      <td><a href="/risks/{{ r.id }}#assessments"><strong>{{ r.title }}</strong></a></td>
+      <td>{{ 'Enterprise' if r.register == 'enterprise' else 'Cyber' }}</td>
+      <td>{{ x.system or '—' }}</td>
+      {% if q %}<td>{{ q.assessed_on }}</td><td>{{ money(q.sle) }}</td><td>{{ '%g' | format(q.aro) }}</td><td><strong>{{ money(q.ale) }}</strong></td>
+      {% else %}<td colspan="4" class="dim">No quantitative assessment</td>{% endif %}
+    </tr>{% endfor %}</tbody>
+    <tfoot><tr><th colspan="6">Total ({{ with_ale }} risk{{ 's' if with_ale != 1 }})</th><th>{{ money(total_ale) }}</th></tr></tfoot>
+  </table></div>
+  {% else %}
+  <div class="empty-state"><i data-lucide="calculator"></i><h2>No open risks</h2><p>Record a risk in the <a href="/risks">register</a>, then assess it from its page.</p></div>
+  {% endif %}
+</article>
+
+<article class="card panel">
+  <header class="panel__head"><h2 class="panel__title">Recent assessments</h2></header>
+  {% if recent %}
+  <div class="table-wrap" style="border:none;box-shadow:none;border-radius:0"><table>
+    <thead><tr><th>Date</th><th>Risk</th><th>Method</th><th>L × I</th><th>Residual</th><th>ALE</th><th>Assessor</th></tr></thead>
+    <tbody>{% for row in recent %}{% set a = row.RiskAssessment %}<tr>
+      <td>{{ a.assessed_on }}</td><td><a href="/risks/{{ a.risk_id }}#assessments">{{ row.risk_title }}</a></td><td>{{ a.method }}</td>
+      <td>{% if a.likelihood_score %}{{ a.likelihood_score }} × {{ a.impact_score }}{% else %}—{% endif %}</td>
+      <td>{{ a.residual_score if a.residual_score is not none else '—' }}</td><td>{{ money(a.ale) }}</td><td>{{ a.assessor or '—' }}</td>
+    </tr>{% endfor %}</tbody></table></div>
+  {% else %}
+  <p class="panel__empty">No assessments recorded. Open a risk to record one.</p>
+  {% endif %}
+</article>
+{% endblock %}

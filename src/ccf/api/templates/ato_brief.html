@@ -1,0 +1,90 @@
+{% extends "base.html" %}
+{% set s = ws.system %}
+{% set p = ws.package %}
+{% set overdue_high = ws.poams.overdue_high %}
+{% block title %}{{ audience_label }} brief · {{ s.name }} · Concord{% endblock %}
+{% block heading %}{{ audience_label }} brief: {{ s.name }}{% endblock %}
+{% block subtitle %}
+  <p class="page__subtitle">Generated {{ ws.today }} from the <a href="/ato/{{ s.id }}">ATO workspace</a>. Every figure here is a count of this system's records on that date.</p>
+{% endblock %}
+{% block actions %}<button class="btn btn--ghost" onclick="window.print()"><i data-lucide="printer"></i> Print / PDF</button>{% endblock %}
+{% block content %}
+
+<section class="card" style="margin-bottom:16px">
+  <div class="card__body">
+    <div class="filters" style="margin-bottom:12px">
+      {% for key, label in audiences.items() %}<a class="btn btn--sm {% if key==audience %}btn--primary{% else %}btn--ghost{% endif %}" href="?audience={{ key }}">{{ label }}</a>{% endfor %}
+    </div>
+    {# The one-line summary. Built only from the figures below. #}
+    <p style="font-size:15px">
+    {% if audience == 'authorizing_official' %}
+      {{ s.name }} is <strong>{{ s.ato_status|replace('_',' ') }}</strong>{% if s.ato_expires_on %} (authorization ends {{ s.ato_expires_on }}){% endif %}.
+      {% if p %}Package {{ p.id }} is <strong>{{ p.status|replace('_',' ') }}</strong>.{% else %}No package has been captured.{% endif %}
+      {{ ws.blockers|length }} blocker{{ '' if ws.blockers|length == 1 else 's' }} on record; {{ overdue_high }} critical/high POA&amp;M{{ '' if overdue_high == 1 else 's' }} overdue.
+    {% elif audience == 'issm' %}
+      {{ ws.poams.active }} open POA&amp;Ms ({{ ws.poams.overdue }} overdue, {{ ws.poams.deviated }} past their original date); {{ ws.extensions|length }} extension request{{ '' if ws.extensions|length == 1 else 's' }} and {{ ws.approvals|length }} approval{{ '' if ws.approvals|length == 1 else 's' }} awaiting a decision.
+    {% elif audience == 'isso' %}
+      {{ ws.actions|length }} item{{ '' if ws.actions|length == 1 else 's' }} in the action queue; {{ ws.evidence.awaiting_review }} evidence object{{ '' if ws.evidence.awaiting_review == 1 else 's' }} awaiting review and {{ ws.evidence.expired }} expired.
+    {% else %}
+      Your system carries {{ ws.poams.active }} open POA&amp;M{{ '' if ws.poams.active == 1 else 's' }} and {{ ws.acceptances|length }} standing risk acceptance{{ '' if ws.acceptances|length == 1 else 's' }}; {{ ws.poams.overdue }} POA&amp;M{{ '' if ws.poams.overdue == 1 else 's' }} need attention now.
+    {% endif %}
+    </p>
+  </div>
+</section>
+
+{# Decisions this reader is asked for. #}
+{% set ns = namespace(items=[]) %}
+{% if p and p.status == 'ao_review' and audience == 'authorizing_official' %}{% set ns.items = ns.items + ['Authorization decision on package ' ~ p.id ~ ' (authorize, authorize with conditions, or deny).'] %}{% endif %}
+{% if p and p.status == 'issm_review' and audience == 'issm' %}{% set ns.items = ns.items + ['ISSM review of package ' ~ p.id ~ '.'] %}{% endif %}
+{% if p and p.status == 'isso_review' and audience == 'isso' %}{% set ns.items = ns.items + ['ISSO review of package ' ~ p.id ~ '.'] %}{% endif %}
+{% if audience in ('authorizing_official','issm') %}{% for e in ws.extensions %}{% set ns.items = ns.items + ['Extension for "' ~ e.poam_title ~ '": ' ~ (e.previous_due_on or 'no date') ~ ' → ' ~ e.requested_due_on ~ '.'] %}{% endfor %}{% endif %}
+{% if audience == 'authorizing_official' %}{% for a in ws.approvals if a.entity_type == 'risk' %}{% set ns.items = ns.items + ['Risk acceptance: "' ~ a.title ~ '".'] %}{% endfor %}{% endif %}
+{% if audience in ('issm','isso') %}{% for a in ws.approvals if a.entity_type == 'poam' %}{% set ns.items = ns.items + ['POA&M review: "' ~ a.title ~ '".'] %}{% endfor %}{% endif %}
+<section class="card" style="margin-bottom:16px">
+  <div class="card__header"><div class="card__title">Decisions requested of the {{ audience_label }}</div></div>
+  <div class="card__body">
+  {% if ns.items %}<ol>{% for i in ns.items %}<li>{{ i }}</li>{% endfor %}</ol>
+  {% else %}<p class="dim">None at this time.</p>{% endif %}
+  </div>
+</section>
+
+<section class="card" style="margin-bottom:16px">
+  <div class="card__header"><div class="card__title">Key figures</div></div>
+  <div class="table-wrap"><table class="data"><tbody>
+    <tr><td>ATO status</td><td><strong>{{ s.ato_status|replace('_',' ') }}</strong>{% if s.ato_expires_on %} · ends {{ s.ato_expires_on }}{% if s.days_to_expiry is not none %} ({{ s.days_to_expiry }} days){% endif %}{% endif %}</td></tr>
+    <tr><td>Current package</td><td>{% if p %}#{{ p.id }} · {{ p.status|replace('_',' ') }} · {{ p.fact_count }} facts · <span class="mono" style="font-size:12px">{{ (p.manifest_sha256 or '')[:16] }}</span>{% else %}<span class="dim">none captured</span>{% endif %}</td></tr>
+    <tr><td>Signing roles</td><td>{% for r in ['isso','issm','authorizing_official'] %}{{ role_labels[r] }}: {% if ws.roles[r] %}{{ ws.roles[r].name or ws.roles[r].email }}{% else %}<span class="chip chip--warn">unassigned</span>{% endif %}{% if not loop.last %} · {% endif %}{% endfor %}</td></tr>
+    <tr><td>Open POA&amp;Ms</td><td>{{ ws.poams.active }} (critical {{ ws.poams.by_severity.critical }}, high {{ ws.poams.by_severity.high }}, moderate {{ ws.poams.by_severity.moderate }}, low {{ ws.poams.by_severity.low }}) · {{ ws.poams.overdue }} overdue · {{ ws.poams.no_due_date }} without a due date</td></tr>
+    <tr><td>Standing risk acceptances</td><td>{{ ws.acceptances|length }} ({{ ws.acceptances|selectattr('expired')|list|length }} expired, {{ ws.acceptances|selectattr('indefinite')|list|length }} with no end date)</td></tr>
+    <tr><td>Evidence</td><td>{{ ws.evidence.total }} objects · {{ ws.evidence.awaiting_review }} awaiting review · {{ ws.evidence.expired }} expired · {{ ws.evidence.expiring_soon }} expiring within 30 days</td></tr>
+    <tr><td>ConMon control health</td><td>{% if ws.conmon.health_pct is none %}<span class="dim">no control implementations recorded</span>{% else %}{{ ws.conmon.by_status.healthy }} of {{ ws.conmon.total }} healthy · {{ ws.conmon.by_status.at_risk }} at risk · {{ ws.conmon.by_status.overdue }} overdue{% endif %}</td></tr>
+    <tr><td>FedRAMP 20x readiness</td><td>{% if ws.readiness and ws.readiness.readiness_pct is not none %}{{ ws.readiness.readiness_pct }}%{% else %}<span class="dim">{{ (ws.readiness.status|replace('_',' ')) if ws.readiness and ws.readiness.status else 'not applicable' }}</span>{% endif %}</td></tr>
+  </tbody></table></div>
+</section>
+
+<section class="card" style="margin-bottom:16px">
+  <div class="card__header"><div class="card__title">Blockers to authorization</div></div>
+  <div class="card__body">
+  {% if ws.blockers %}<ul>{% for b in ws.blockers %}<li><strong>{{ b.title }}</strong>: {{ b.detail }}</li>{% endfor %}</ul>
+  {% else %}<p class="dim">None.</p>{% endif %}
+  </div>
+</section>
+
+{% if audience != 'system_owner' and ws.history %}
+<section class="card" style="margin-bottom:16px">
+  <div class="card__header"><div class="card__title">Package {{ p.id }} history</div></div>
+  <div class="table-wrap"><table class="data"><tbody>
+    {% for e in ws.history %}<tr><td class="dim" style="font-size:12px">{{ e.at.strftime('%Y-%m-%d') if e.at else '—' }}</td><td>{{ e.action|replace('_',' ') }}</td><td>{{ e.actor or 'scheduler' }}{% if e.acted_as %} <span class="dim">as {{ role_labels.get(e.acted_as, e.acted_as) }}</span>{% endif %}</td><td class="dim" style="font-size:12px">{{ e.reason or '' }}</td></tr>{% endfor %}
+  </tbody></table></div>
+</section>
+{% endif %}
+
+{% if ws.poams.top %}
+<section class="card">
+  <div class="card__header"><div class="card__title">Highest-severity open POA&amp;Ms</div></div>
+  <div class="table-wrap"><table class="data"><tbody>
+    {% for x in ws.poams.top[:8] %}<tr><td><span class="chip {% if x.severity in ('critical','high') %}chip--err{% else %}chip--warn{% endif %}">{{ x.severity }}</span></td><td>{{ x.title }}</td><td>{% if x.overdue %}<span class="chip chip--err">due {{ x.due_on }}</span>{% else %}<span class="dim">due {{ x.due_on or '—' }}</span>{% endif %}</td></tr>{% endfor %}
+  </tbody></table></div>
+</section>
+{% endif %}
+{% endblock %}

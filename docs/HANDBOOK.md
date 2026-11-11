@@ -221,7 +221,8 @@ wrong, because before it existed changing the key orphaned every stored secret:
 1. Set `CCF_AI_CREDENTIAL_PREVIOUS_KEYS` to a JSON array holding the **old**
    key, and `CCF_AI_CREDENTIAL_MASTER_KEY` to the new one.
 2. `ccf keys-rewrap` — moves every stored secret onto the current key and
-   reports anything it could not read, with the key id to restore.
+   reports anything it could not read: with the key id to restore, or as
+   damaged when no key would help.
 3. `ccf keys-status`, then drop the old key from the environment.
 
 Rewrapping is never lazy. A read path that re-encrypts can roll back while an
@@ -301,7 +302,7 @@ Four roles. Yours decides what you can change, not what you can see.
 
 | Role | Can |
 |---|---|
-| **viewer** | Read everything in your organization. Change nothing. |
+| **viewer** | Read everything in your organization. Change nothing, except enrolling your own second factor, marking your own notifications read, and logging a trust-portal access request (which an admin then decides). Running a saved query or validating a document is allowed: neither stores anything. Enforced for every route in the auth gate. |
 | **control_owner** | Everything a viewer can, plus write the control implementations, evidence and POA&Ms you own. |
 | **assessor** | Record assessment results and findings. The role a 3PAO's people hold. |
 | **admin** | All of the above, plus users, connectors, settings and external portal access. |

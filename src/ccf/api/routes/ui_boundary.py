@@ -15,11 +15,21 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import HTMLResponse
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...auth import Principal
 from ...boundary.diagram import boundary_mermaid, data_flow_mermaid
 from ...boundary.summary import system_boundary_summary
+from ...models_boundary import (
+    CMVP_URL,
+    CRYPTO_STATUSES,
+    CRYPTO_USAGES,
+    PPS_DIRECTIONS,
+    PPS_PROTOCOLS,
+    CryptoModule,
+    PortProtocolService,
+)
 from ..auth_deps import require_role
 from ..deps import get_session
 from .boundary import (
@@ -45,6 +55,20 @@ async def boundary_page(
 ) -> HTMLResponse:
     sys = await require_system_in_scope(session, system_id, principal)
     summary = await system_boundary_summary(session, system_id)
+    ports = (
+        await session.execute(
+            select(PortProtocolService)
+            .where(PortProtocolService.system_id == system_id)
+            .order_by(PortProtocolService.protocol, PortProtocolService.port)
+        )
+    ).scalars().all()
+    crypto = (
+        await session.execute(
+            select(CryptoModule)
+            .where(CryptoModule.system_id == system_id)
+            .order_by(CryptoModule.module_name)
+        )
+    ).scalars().all()
     return templates.TemplateResponse(
         request,
         "system_boundary.html",
@@ -63,5 +87,12 @@ async def boundary_page(
             "interconnection_directions": sorted(INTERCONNECTION_DIRECTIONS),
             "interconnection_agreement_types": sorted(INTERCONNECTION_AGREEMENT_TYPES),
             "fips199_impacts": sorted(FIPS199_IMPACTS),
+            "ports": ports,
+            "crypto": crypto,
+            "pps_protocols": PPS_PROTOCOLS,
+            "pps_directions": PPS_DIRECTIONS,
+            "crypto_statuses": CRYPTO_STATUSES,
+            "crypto_usages": CRYPTO_USAGES,
+            "cmvp_url": CMVP_URL,
         },
     )

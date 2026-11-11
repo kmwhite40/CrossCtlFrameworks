@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block title %}ATO workspace · Concord{% endblock %}
+{% block heading %}ATO workspace{% endblock %}
+{% block subtitle %}
+  <p class="page__subtitle">Each system's authorization: who signs, where its package is in review, and what stands in the way.</p>
+{% endblock %}
+{% block content %}
+
+<div class="cols-4" style="margin-bottom:16px">
+  <div class="kpi"><div class="kpi__label">Systems</div><div class="kpi__value">{{ counts.systems }}</div></div>
+  <div class="kpi"><div class="kpi__label">Authorized</div><div class="kpi__value">{{ counts.authorized }}</div></div>
+  <div class="kpi"><div class="kpi__label">Package in review</div><div class="kpi__value">{{ counts.in_review }}</div></div>
+  <div class="kpi"><div class="kpi__label">With blockers</div><div class="kpi__value"{% if counts.blocked %} style="color:var(--danger-ink)"{% endif %}>{{ counts.blocked }}</div></div>
+</div>
+
+<section class="card">
+  <div class="card__header">
+    <div class="card__title">Systems</div>
+    <span class="dim" style="font-size:13px">{{ rows|length }} shown</span>
+  </div>
+  {% if rows %}
+  <div class="table-wrap"><table class="data">
+    <thead><tr>
+      <th>System</th><th>Baseline</th><th>ATO status</th><th>Expires</th>
+      <th>Current package</th><th>Signing roles</th><th>Blockers</th>
+    </tr></thead>
+    <tbody>
+      {% for r in rows %}<tr>
+        <td><a href="/ato/{{ r.id }}"><strong>{{ r.name }}</strong></a></td>
+        <td class="dim">{{ r.baseline or '—' }}</td>
+        <td><span class="chip {% if r.ato_status=='authorized' %}chip--ok{% elif r.ato_status=='expired' %}chip--err{% elif r.ato_status=='in_progress' %}chip--warn{% else %}chip--ghost{% endif %}">{{ r.ato_status|replace('_',' ') }}</span></td>
+        <td>{% if r.ato_expires_on %}{% if r.days_to_expiry is not none and r.days_to_expiry < 0 %}<span class="chip chip--err">{{ r.ato_expires_on }}</span>{% elif r.days_to_expiry is not none and r.days_to_expiry <= 90 %}<span class="chip chip--warn">{{ r.ato_expires_on }}</span>{% else %}<span class="dim">{{ r.ato_expires_on }}</span>{% endif %}{% else %}<span class="dim">—</span>{% endif %}</td>
+        <td>{% if r.package_status %}<span class="chip">{{ r.package_status|replace('_',' ') }}</span>{% else %}<span class="dim">none captured</span>{% endif %}</td>
+        <td>{% if r.roles_assigned == 3 %}<span class="chip chip--ok">ISSO · ISSM · AO</span>{% else %}<span class="chip chip--warn">{{ r.roles_assigned }} of 3</span>{% endif %}</td>
+        <td>{% if r.blockers %}<span class="chip chip--err">{{ r.blockers }}</span>{% else %}<span class="dim">none</span>{% endif %}</td>
+      </tr>{% endfor %}
+    </tbody>
+  </table></div>
+  {% else %}
+  <div class="card__body"><p class="dim">No systems yet. <a href="/intake">Onboard one</a> to start its authorization.</p></div>
+  {% endif %}
+</section>
+{% endblock %}

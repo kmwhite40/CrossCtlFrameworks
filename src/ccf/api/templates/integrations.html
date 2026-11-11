@@ -1,0 +1,83 @@
+{% extends "base.html" %}
+{% block title %}Integrations · Concord{% endblock %}
+{% block heading %}Integrations{% endblock %}
+{% block subtitle %}Everything this organization connects to, as Concord has recorded it: collection connectors, outbound webhooks, sign-in configuration and issue-tracker links. Each section links to the page that manages it.{% endblock %}
+{% block content %}
+{% if not view.scoped %}
+<div class="card empty-state"><i data-lucide="building-2"></i><h2>No organization in scope</h2><p>Integrations belong to one organization. Global and unauthenticated sessions see this instead.</p></div>
+{% else %}
+<section class="kpi-grid kpi-grid--4">
+  <div class="kpi"><span class="kpi__label">Connectors</span><span class="kpi__value">{{ view.connectors | length }}</span></div>
+  <div class="kpi"><span class="kpi__label">Active webhooks</span><span class="kpi__value">{{ view.webhooks | selectattr('active') | list | length }}</span><span class="kpi__meta">of {{ view.webhooks | length }}</span></div>
+  <div class="kpi"><span class="kpi__label">Single sign-on</span><span class="kpi__value">{{ 'On' if view.sso.oidc_enabled else 'Off' }}</span><span class="kpi__meta">OIDC, deployment setting</span></div>
+  <div class="kpi"><span class="kpi__label">Issue-tracker links</span><span class="kpi__value">{{ view.issue_links | sum(attribute='total') }}</span></div>
+</section>
+
+<article class="card panel" id="connectors">
+  <header class="panel__head"><h2 class="panel__title">Connectors</h2><a class="panel__link" href="/connectors">Manage connectors</a></header>
+  {% if view.connectors %}
+  <div class="table-wrap"><table>
+    <thead><tr><th>Name</th><th>Type</th><th>Status</th><th>Last sync</th><th>Readiness</th><th>Credential</th></tr></thead>
+    <tbody>{% for c in view.connectors %}<tr>
+      <td><a href="/connectors/{{ c.id }}">{{ c.name }}</a></td>
+      <td><span class="chip chip--brand">{{ c.type }}</span></td>
+      <td><span class="chip {% if c.status in ('connected', 'ok', 'active') %}chip--ok{% elif c.status in ('error', 'failed') %}chip--err{% else %}chip--ghost{% endif %}">{{ c.status | replace('_', ' ') }}</span></td>
+      <td>{{ c.last_sync.date() if c.last_sync else 'never' }}</td>
+      <td>{{ (c.readiness or 'not checked') | replace('_', ' ') }}</td>
+      <td>{{ 'stored' if c.has_credential else 'none' }}</td>
+    </tr>{% endfor %}</tbody>
+  </table></div>
+  {% else %}<p class="panel__empty">No connector is configured for this organization. Add the first on <a href="/connectors">Collection Automation</a>.</p>{% endif %}
+</article>
+
+<article class="card panel" id="webhooks">
+  <header class="panel__head"><h2 class="panel__title">Webhooks</h2><span class="panel__hint">Each event Concord emits for this organization is posted to every active subscription; a secret signs the body (X-CCF-Signature). Secrets are never shown. Also available as <span class="mono">/api/webhooks</span>.</span></header>
+  {% if view.webhooks %}
+  <div class="table-wrap"><table>
+    <thead><tr><th>URL</th><th>Subscribed to</th><th>Signed</th><th>State</th><th>Created</th>{% if is_admin %}<th></th>{% endif %}</tr></thead>
+    <tbody>{% for w in view.webhooks %}<tr id="webhook-{{ w.id }}">
+      <td class="mono">{{ w.url }}</td>
+      <td>{% if w.events %}{% for e in w.events %}<span class="chip chip--ghost">{{ e }}</span> {% endfor %}{% else %}<span class="dim">every event</span>{% endif %}</td>
+      <td>{{ 'yes' if w.signed else 'no' }}</td>
+      <td><span class="chip {{ 'chip--ok' if w.active else 'chip--ghost' }}">{{ 'active' if w.active else 'disabled' }}</span></td>
+      <td>{{ w.created_at.date() if w.created_at else '—' }}</td>
+      {% if is_admin %}<td>{% if w.active %}<form method="post" action="/integrations/webhooks/{{ w.id }}/disable"><button class="btn btn--ghost btn--sm" type="submit">Disable</button></form>{% endif %}</td>{% endif %}
+    </tr>{% endfor %}</tbody>
+  </table></div>
+  {% else %}<p class="panel__empty">No webhook is subscribed for this organization.{% if is_admin %} Add the first below.{% else %} An admin can add one.{% endif %}</p>{% endif %}
+  {% if is_admin %}
+  <form method="post" action="/integrations/webhooks" class="card__body filters">
+    <input class="input" name="url" type="url" required placeholder="https://example.org/hooks/concord" aria-label="Webhook URL">
+    <input class="input" name="secret" type="password" autocomplete="off" placeholder="Signing secret (optional)" aria-label="Signing secret">
+    <input class="input" name="subscribed" placeholder="Verbs or entity types, comma-separated (blank: all)" aria-label="Subscribed events">
+    <button class="btn btn--primary" type="submit">Add webhook</button>
+  </form>
+  {% endif %}
+</article>
+
+<article class="card panel" id="sso">
+  <header class="panel__head"><h2 class="panel__title">Identity and sign-in</h2><a class="panel__link" href="/settings/security">Sign-in security</a></header>
+  <div class="table-wrap"><table>
+    <tbody>
+      <tr><th scope="row">OIDC single sign-on</th><td>{% if view.sso.oidc_enabled %}<span class="chip chip--ok">enabled</span> <span class="mono">{{ view.sso.issuer or 'no issuer set' }}</span>{% else %}<span class="chip chip--ghost">off</span>{% endif %} <span class="dim">· a deployment setting (CCF_OIDC_*), shared by every organization</span></td></tr>
+      <tr><th scope="row">Just-in-time provisioning</th><td>{{ 'on' if view.sso.jit else 'off' }}</td></tr>
+      <tr><th scope="row">SCIM provisioning</th><td>{{ 'enabled' if view.sso.scim_enabled else 'off' }}</td></tr>
+      <tr><th scope="row">PIV / CAC sign-in</th><td>{{ 'enabled' if view.sso.piv_enabled else 'off' }}</td></tr>
+      <tr><th scope="row">Second factor required for</th><td>{{ {'optional': 'nobody (optional)', 'admins': 'administrators', 'all': 'everyone'}.get(view.sso.mfa_policy, view.sso.mfa_policy or '—') }}</td></tr>
+      <tr><th scope="row">Identity-provider records</th><td>{{ view.sso.idp_records }} ({{ view.sso.idp_enabled }} enabled) <span class="dim">· kept through /api/admin/idp</span></td></tr>
+      <tr><th scope="row">IdP group-to-role mappings</th><td>{{ view.sso.group_mappings }}</td></tr>
+    </tbody>
+  </table></div>
+</article>
+
+<article class="card panel" id="issue-links">
+  <header class="panel__head"><h2 class="panel__title">Issue-tracker links</h2><a class="panel__link" href="/poams">POA&amp;Ms and their tickets</a></header>
+  {% if view.issue_links %}
+  <div class="table-wrap"><table>
+    <thead><tr><th>Provider</th><th>Records pushed</th><th>Last push ok</th><th>Last push failed</th></tr></thead>
+    <tbody>{% for l in view.issue_links %}<tr><td><span class="chip chip--brand">{{ l.provider }}</span></td><td>{{ l.total }}</td><td>{{ l.ok }}</td><td>{{ l.failed }}</td></tr>{% endfor %}</tbody>
+  </table></div>
+  {% else %}<p class="panel__empty">No record of this organization has been pushed to an issue tracker. POA&amp;Ms are pushed from the <a href="/poams">POA&amp;M register</a> once a Jira or eMASS credential is stored on <a href="/connectors">Collection Automation</a>.</p>{% endif %}
+</article>
+{% endif %}
+{% endblock %}

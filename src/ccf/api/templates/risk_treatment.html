@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block title %}Risk Treatment Plans · Concord{% endblock %}
+{% block heading %}Risk treatment plans{% endblock %}
+{% block subtitle %}Each plan's strategy, owner, due date and actions. Progress is done actions over actions.{% endblock %}
+{% block actions %}<a class="btn btn--secondary" href="/risks"><i data-lucide="list"></i>Risk register</a>{% endblock %}
+{% block content %}
+<section class="kpi-grid kpi-grid--4">
+  <div class="kpi"><span class="kpi__label"><span>Open plans</span></span><span class="kpi__value">{{ open_plans }}</span><span class="kpi__meta">planned or in progress, of {{ plans | length }}</span></div>
+  <div class="kpi"><span class="kpi__label"><span>Overdue</span></span><span class="kpi__value">{{ overdue }}</span><span class="kpi__meta">open plans past their due date</span></div>
+  <div class="kpi" title="Done actions over all actions on every plan"><span class="kpi__label"><span>Actions done</span></span><span class="kpi__value">{% if overall is none %}—{% else %}{{ overall }}%{% endif %}</span><span class="kpi__meta">{{ actions_done }} of {{ actions_total }} action{{ 's' if actions_total != 1 }}</span></div>
+</section>
+<article class="card panel">
+  <header class="panel__head"><h2 class="panel__title">Plans</h2><span class="panel__hint">{{ plans | length }}</span></header>
+  {% if plans %}
+  <div class="table-wrap" style="border:none;box-shadow:none;border-radius:0"><table>
+    <thead><tr><th>Risk</th><th>Strategy</th><th>Status</th><th>Owner</th><th>Due</th><th title="Target residual / current residual">Residual target</th><th title="Done actions over actions">Progress</th></tr></thead>
+    <tbody>{% for p in plans %}{% set plan = p.plan %}<tr id="plan-{{ plan.id }}">
+      <td><a href="/risks/{{ plan.risk_id }}#plan-{{ plan.id }}"><strong>{{ p.risk_title }}</strong></a></td>
+      <td><span class="chip chip--brand">{{ plan.strategy }}</span></td>
+      <td><span class="chip">{{ plan.status }}</span>{% if p.overdue %} <span class="chip chip--err">Overdue</span>{% endif %}</td>
+      <td>{{ user_names.get(plan.owner_user_id, '—') }}</td>
+      <td>{{ plan.due_on or '—' }}</td>
+      <td>{{ plan.target_residual_score or '—' }} / {{ p.risk_residual if p.risk_residual is not none else '—' }}</td>
+      <td>{% if p.progress is none %}—{% else %}{{ p.progress }}%{% endif %} <span class="dim">({{ p.done }} of {{ p.actions | length }})</span></td>
+    </tr>{% endfor %}</tbody></table></div>
+  {% else %}
+  <div class="empty-state"><i data-lucide="list-checks"></i><h2>No treatment plans</h2><p>Open a risk from the <a href="/risks">register</a> and add a plan in its Treatment section.</p></div>
+  {% endif %}
+</article>
+{% endblock %}

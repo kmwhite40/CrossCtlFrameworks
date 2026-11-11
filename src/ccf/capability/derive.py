@@ -24,7 +24,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import Select, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..catalog.canonical import canonicalize
@@ -36,34 +36,41 @@ from .rollup import roll_up
 log = get_logger(__name__)
 
 
-async def _capabilities_for_system(
-    session: AsyncSession, *, system_id: int
-) -> list[tuple[Capability, str]]:
-    """``(capability, raw_control_id)`` pairs bound to this system.
+def bound_capability_ids(system_id: int) -> Select[tuple[int]]:
+    """Ids of the capabilities bound to a system: capability -> component -> system.
 
     Binding runs capability -> component -> system, which is also how a
     policy- or process-backed capability attaches: ``SystemComponent.type``
     already includes ``policy`` and ``process``.
 
-    Joined to ``System`` and filtered on ``Capability.organization_id ==
-    System.organization_id`` -- an edge's FK check does not consult RLS, so
-    without this predicate a capability from one tenant bound (by id, e.g.
-    ``set_components``) to another tenant's component would fold into that
-    other tenant's derived control status. This is the only defense for the
-    CLI/scheduler paths that call this through ``session_scope()``, which runs
-    unscoped (RLS bypass) by design.
+    Filtered on ``Capability.organization_id == System.organization_id`` -- an
+    edge's FK check does not consult RLS, so without this predicate a
+    capability from one tenant bound (by id) to another tenant's component
+    would count as the other tenant's. This is the only defense for the
+    CLI/scheduler paths, which run through ``session_scope()`` unscoped.
     """
+    return (
+        select(Capability.id)
+        .join(CapabilityComponent, CapabilityComponent.capability_id == Capability.id)
+        .join(SystemComponent, SystemComponent.id == CapabilityComponent.component_id)
+        .join(System, System.id == SystemComponent.system_id)
+        .where(
+            SystemComponent.system_id == system_id,
+            Capability.organization_id == System.organization_id,
+        )
+    )
+
+
+async def _capabilities_for_system(
+    session: AsyncSession, *, system_id: int
+) -> list[tuple[Capability, str]]:
+    """``(capability, raw_control_id)`` pairs bound to this system (see
+    :func:`bound_capability_ids` for the binding and its tenant predicate)."""
     rows = (
         await session.execute(
             select(Capability, CapabilityControl.control_id)
-            .join(CapabilityComponent, CapabilityComponent.capability_id == Capability.id)
-            .join(SystemComponent, SystemComponent.id == CapabilityComponent.component_id)
-            .join(System, System.id == SystemComponent.system_id)
             .join(CapabilityControl, CapabilityControl.capability_id == Capability.id)
-            .where(
-                SystemComponent.system_id == system_id,
-                Capability.organization_id == System.organization_id,
-            )
+            .where(Capability.id.in_(bound_capability_ids(system_id)))
         )
     ).all()
     return [(r[0], r[1]) for r in rows]

@@ -831,7 +831,10 @@ def test_the_password_policy_reader_maps_only_no_such_entity_to_empty(
 def test_the_account_summary_reader_returns_the_response(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    assert _with_iam(monkeypatch, _FakeIam())._read_account_summary() == [SUMMARY_MFA_ON]
+    # The reader adds the partition (a GovCloud root user cannot sign in).
+    assert _with_iam(monkeypatch, _FakeIam())._read_account_summary() == [
+        {**SUMMARY_MFA_ON, "Partition": "aws-us-gov"}
+    ]
 
 
 def test_the_access_key_reader_flattens_every_users_keys(

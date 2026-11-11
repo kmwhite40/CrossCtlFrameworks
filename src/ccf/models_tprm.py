@@ -15,6 +15,7 @@ from typing import Any
 
 from sqlalchemy import (
     BigInteger,
+    Boolean,
     Date,
     DateTime,
     Float,
@@ -22,6 +23,7 @@ from sqlalchemy import (
     Integer,
     String,
     Text,
+    UniqueConstraint,
     func,
 )
 from sqlalchemy.dialects.postgresql import JSONB
@@ -100,3 +102,43 @@ class QuestionnaireResponse(Base):
     sort_order: Mapped[int] = mapped_column(Integer, default=0)
 
     questionnaire: Mapped[VendorQuestionnaire] = relationship(back_populates="responses")
+
+
+class VendorCertDocument(Base):
+    """One file of a vendor's FedRAMP certification package, as uploaded.
+
+    The agency side of :mod:`ccf.fedramp20x.crosswalk` (migration 0121). One row
+    per ``(vendor_id, kind)``: re-uploading a kind replaces it, and the route
+    records an audit event either way. An invalid file is kept with its verdict,
+    as :mod:`ccf.cr26.store` keeps a provider's own drafts: the reviewer needs to
+    see what was sent, not lose it. ``organization_id`` is the vendor's;
+    ``ccf.assert_parent_org`` refuses a row whose vendor belongs to another
+    organization.
+    """
+
+    __tablename__ = "vendor_cert_documents"
+    __table_args__ = (
+        UniqueConstraint("vendor_id", "kind", name="uq_vendor_cert_documents_vendor_kind"),
+        {"schema": "ccf"},
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    organization_id: Mapped[int] = mapped_column(
+        ForeignKey("ccf.organizations.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    vendor_id: Mapped[int] = mapped_column(
+        ForeignKey("ccf.vendors.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    #: One of ``ccf.fedramp20x.crosswalk.PACKAGE_KINDS``.
+    kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    document: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    filename: Mapped[str] = mapped_column(String(255), nullable=False)
+    sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    size_bytes: Mapped[int] = mapped_column(Integer, nullable=False)
+    is_valid: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    validation_errors: Mapped[list[Any]] = mapped_column(JSONB, nullable=False, default=list)
+    uploaded_by: Mapped[str] = mapped_column(String(255), nullable=False)
+    uploaded_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+

@@ -375,7 +375,8 @@ state. See 2.2.
 ### 2.17 FedRAMP 20x / KSI validation — **EXISTS / EXTEND**
 
 **Exists:** `fedramp20x/` — KSI catalog seeded from
-`data/fedramp_20x_ksi_catalog.json` (idempotent upsert on `identifier`),
+FedRAMP's vendored Consolidated Rules (`fedramp20x/rules_data/`; upsert on
+`identifier`, superseded rows retired),
 deterministic rule validation with append-only history and per-system KSI
 state, readiness scoring, authorized-dependency tracking, assessor review, and
 a machine-readable package foundation. KSIs stay traceable to 800-53 through

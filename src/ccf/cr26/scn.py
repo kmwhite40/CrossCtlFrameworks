@@ -38,8 +38,10 @@ in either direction is a real trap:
    look it up in the control catalog. Found -> recognised (nothing added).
    Not found -> ``"no such control"``.
 3. Otherwise -> stripped and lower-cased, look the value up in the KSI
-   catalog by ``identifier`` (also lower-cased). Found -> recognised. Not
-   found -> ``"not a known control or KSI"``.
+   catalog by ``identifier`` (also lower-cased). Found and current ->
+   recognised. Found but retired (a phase-one ID after the 2026 cut-over) ->
+   ``"a retired KSI, not in FedRAMP's current rules"``. Not found ->
+   ``"not a known control or KSI"``.
 
    **Corrected from the design spec's original wording (review round 3,
    I5).** The spec's §2.1 literally said "the RAW value", and an exact,
@@ -258,13 +260,18 @@ async def _resolve_impacted_controls(
         # only the comparison changes.
         found_ksi = (
             await session.execute(
-                select(KSI.id).where(
+                select(KSI.retired_at).where(
                     func.lower(KSI.identifier) == entry.strip().lower()
                 )
             )
-        ).scalar_one_or_none()
+        ).first()
         if found_ksi is None:
             unrecognised.append((entry, "not a known control or KSI"))
+        elif found_ksi.retired_at is not None:
+            # Concord holds it, so "not known" would be false -- but FedRAMP's
+            # current rules no longer define it, and an SCN naming it points an
+            # assessor at an indicator nobody validates any more.
+            unrecognised.append((entry, "a retired KSI, not in FedRAMP's current rules"))
     return unrecognised
 
 

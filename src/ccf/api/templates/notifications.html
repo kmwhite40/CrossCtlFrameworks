@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+{% block title %}Notifications · Concord{% endblock %}
+{% block heading %}Notifications{% endblock %}
+{% block subtitle %}Alerts broadcast to your organization and those addressed to you. Read state is yours alone.{% endblock %}
+{% block content %}
+{% if box is none %}
+<div class="card empty-state"><i data-lucide="bell-off"></i><h2>Sign in to see notifications</h2><p>Notifications belong to a user; there is no signed-in user on this request.</p></div>
+{% else %}
+<form class="filters card" method="get" style="padding:var(--space-4) var(--space-5)">
+  <label class="field-group"><span class="label">Show</span>
+    <select class="select" name="unread"><option value="false" {% if not unread %}selected{% endif %}>All</option><option value="true" {% if unread %}selected{% endif %}>Unread only</option></select></label>
+  <label class="field-group"><span class="label">Category</span>
+    <select class="select" name="category"><option value="">Any</option>{% for c in box.categories %}<option value="{{ c }}" {% if c == category %}selected{% endif %}>{{ c | replace('_',' ') | capitalize }}</option>{% endfor %}</select></label>
+  <button class="btn btn--primary" type="submit">Apply</button>
+</form>
+<div class="card">{% set compact = false %}{% include "_notifications.html" %}</div>
+{% endif %}
+{% endblock %}

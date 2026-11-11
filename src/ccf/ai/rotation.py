@@ -17,13 +17,16 @@ from typing import TYPE_CHECKING, Any
 from sqlalchemy import select
 
 from ..config import get_settings
+from ..models import OrgNotifyChannel
 from ..models_ai_actions import AiProviderConfig
 from ..models_grc import ConnectorConfig
 from ..models_identity import UserMfaCredential
 from .cipher import (
     AAD_CREDENTIAL,
     AAD_MFA,
+    AAD_NOTIFY_CHANNEL,
     KmsUnavailableError,
+    PayloadAuthenticationError,
     UnknownKeyError,
     build_cipher,
     token_key_id,
@@ -53,6 +56,16 @@ ENCRYPTED_COLUMNS: tuple[EncryptedColumn, ...] = (
     ),
     EncryptedColumn(ConnectorConfig, "encrypted_credential", AAD_CREDENTIAL, "connector_configs"),
     EncryptedColumn(UserMfaCredential, "secret_encrypted", AAD_MFA, "user_mfa_credentials"),
+    EncryptedColumn(OrgNotifyChannel, "encrypted_url", AAD_NOTIFY_CHANNEL, "org_notify_channels"),
+)
+
+
+#: Why a ``damaged`` row could not be read. Fixed phrases, never exception
+#: text: an error message can quote the bytes it choked on.
+DAMAGED_NOT_CIPHERTEXT = "the stored value is not a ciphertext this code wrote"
+DAMAGED_NOT_AUTHENTIC = (
+    "the key is present but the value did not authenticate: it belongs to "
+    "another store, or the stored bytes were modified"
 )
 
 
@@ -62,15 +75,19 @@ class RewrapReport:
 
     rewrapped: int = 0
     already_current: int = 0
-    #: ``(table, row id, the key id the row needs)``. Reported rather than
-    #: counted as a bare failure: an operator who dropped a predecessor too
-    #: early needs to know which key to put back, and a tag failure naming
-    #: nothing cannot tell them.
+    #: ``(table, row id, the key id the row needs)``: rows a missing key would
+    #: rescue. Reported rather than counted as a bare failure: an operator who
+    #: dropped a predecessor too early needs to know which key to put back.
     unreadable: list[tuple[str, int, str | None]] = field(default_factory=list)
+    #: ``(table, row id, why)``: rows no key will rescue -- not a ciphertext at
+    #: all, or one that fails authentication under a key that IS configured.
+    #: Kept apart from ``unreadable`` so the operator is never told to restore
+    #: a key that is not missing. The secret has to be entered again.
+    damaged: list[tuple[str, int, str]] = field(default_factory=list)
 
     @property
     def ok(self) -> bool:
-        return not self.unreadable
+        return not self.unreadable and not self.damaged
 
 
 async def rewrap_all(session: AsyncSession) -> RewrapReport:
@@ -85,8 +102,15 @@ async def rewrap_all(session: AsyncSession) -> RewrapReport:
             token = getattr(row, spec.column, None)
             if not token:
                 continue
-            if not cipher.needs_rewrap(token):
-                report.already_current += 1
+            # Parsed inside the handling, not before it: one value that is not
+            # a ciphertext at all used to raise out of the sweep, naming no
+            # row and leaving every later row on the old key.
+            try:
+                if not cipher.needs_rewrap(token):
+                    report.already_current += 1
+                    continue
+            except Exception:
+                report.damaged.append((spec.label, row.id, DAMAGED_NOT_CIPHERTEXT))
                 continue
             try:
                 setattr(row, spec.column, cipher.rewrap(token))
@@ -98,10 +122,46 @@ async def rewrap_all(session: AsyncSession) -> RewrapReport:
                 # may fix. Reporting it beside genuinely orphaned rows would
                 # tell an operator to restore a key that was never missing.
                 raise
+            except PayloadAuthenticationError:
+                report.damaged.append((spec.label, row.id, DAMAGED_NOT_AUTHENTIC))
+                continue
             except Exception:
+                # The token parsed (needs_rewrap did), so its key id is safe to
+                # read; what failed is not established, so it is filed where a
+                # key might help, as before.
                 report.unreadable.append((spec.label, row.id, token_key_id(token)))
                 continue
             report.rewrapped += 1
 
     await session.flush()
     return report
+
+
+#: The ``key_census`` bucket for a value that does not parse at all.
+CENSUS_DAMAGED = "damaged (not a ciphertext)"
+#: The bucket for a version-1 value, which recorded no key id.
+CENSUS_V1 = "v1 (no key id)"
+
+
+async def key_census(session: AsyncSession) -> dict[str, dict[str, int]]:
+    """Per store, how many stored values sit under each key id. Reads only.
+
+    ``ccf keys-status`` prints this to confirm a rotation finished. A value
+    that does not parse is counted under :data:`CENSUS_DAMAGED` rather than
+    raised: the status check an operator runs after a rotation must not be
+    the thing that crashes on the row they need to find.
+    """
+    census: dict[str, dict[str, int]] = {}
+    for spec in ENCRYPTED_COLUMNS:
+        by_key: dict[str, int] = {}
+        for row in (await session.execute(select(spec.model))).scalars().all():
+            token = getattr(row, spec.column, None)
+            if not token:
+                continue
+            try:
+                kid = token_key_id(token) or CENSUS_V1
+            except Exception:
+                kid = CENSUS_DAMAGED
+            by_key[kid] = by_key.get(kid, 0) + 1
+        census[spec.label] = by_key
+    return census

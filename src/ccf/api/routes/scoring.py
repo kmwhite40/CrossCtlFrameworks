@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ...auth import Principal
 from ...governance import reactions
 from ...models import ScoringControl, ScoringStatus, System
+from ...scoring import engine as scoring_engine
 from ...scoring.engine import STATES
 from ...scoring.seed import seed_scoring_controls
 from ...scoring.service import record_assessed_state, system_score_summary
@@ -142,7 +143,12 @@ async def system_matrix(
             }
         )
     summary = await compute_summary(session, system_id)
-    return {"system_id": system_id, "controls": rows, "summary": summary}
+    return {
+        "system_id": system_id,
+        "controls": rows,
+        "summary": summary,
+        "gaps": scoring_engine.gaps(rows, recorded=states.keys()),
+    }
 
 
 @router.put("/systems/{system_id}/controls/{control_id}")
@@ -170,6 +176,7 @@ async def set_control_state(
             .where(ScoringStatus.scoring_control_id == ctrl.id)
         )
     ).scalar_one_or_none()
+    previous_state = status.state if status is not None else None
     if status is None:
         status = ScoringStatus(system_id=system_id, scoring_control_id=ctrl.id)
         session.add(status)
@@ -177,12 +184,13 @@ async def set_control_state(
         status, body.state, notes=body.notes, evidence_ref=body.evidence_ref
     )
     await session.flush()
-    # Reaction: satisfying a practice auto-closes its gap POA&M + records an event.
+    # Reaction: satisfying a practice flags its POA&Ms for closure review + records an event.
     reaction = await reactions.on_scoring_status_changed(
         session,
         system_id=system_id,
         control_id=control_id,
         state=status.state,
+        previous_state=previous_state,
         org_id=principal.org_id,
         actor=principal.email,
     )

@@ -82,7 +82,7 @@
     <div class="card__header"><div class="card__title">Alerts</div><span class="chip chip--brand">{{ counts.unread_alerts }} unread</span></div>
     <div class="card__body stack" style="gap:8px">
       {% for n in notifs %}
-      <div class="row between" style="border-bottom:1px solid var(--ink-100);padding-bottom:6px;{% if n.read_at %}opacity:.6{% endif %}">
+      <div class="row between" style="border-bottom:1px solid var(--ink-100);padding-bottom:6px;{% if n.id in notif_read %}opacity:.6{% endif %}">
         <div>
           <span class="chip {% if n.severity=='critical' %}chip--err{% elif n.severity=='warning' %}chip--warn{% else %}chip--ghost{% endif %}">{{ n.severity }}</span>
           <span style="font-weight:600">{{ n.title }}</span>

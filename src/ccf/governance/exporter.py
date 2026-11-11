@@ -16,8 +16,13 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ..constants import (
+    POAM_CLOSED_STATUSES,
+    POAM_STATUSES,
+    poam_leaves_risk_accepted,
+)
 from ..models import POAM, Policy, Risk, System, Vendor
-from .risk import band, compute_scores
+from .risk import band, compute_scores, resolve_axis, risk_in_scope
 
 FORMATS = ("csv", "json", "md")
 
@@ -50,14 +55,18 @@ async def _poams(session: AsyncSession, org_id: int | None) -> list[dict[str, An
 async def _risks(session: AsyncSession, org_id: int | None) -> list[dict[str, Any]]:
     stmt = select(Risk).order_by(Risk.id)
     if org_id is not None:
-        stmt = stmt.where(Risk.system_id.in_(_org_systems(org_id)))
+        # Enterprise risks (no system) are the organization's too; the one
+        # scope definition is governance.risk.risk_in_scope.
+        stmt = stmt.where(risk_in_scope(org_id))
     return [
         {
             "id": r.id,
             "title": r.title,
             "category": r.category,
             "likelihood": r.likelihood,
+            "likelihood_score": r.likelihood_score,
             "impact": r.impact,
+            "impact_score": r.impact_score,
             "treatment": r.treatment,
             "status": r.status,
             "inherent_score": r.inherent_score,
@@ -222,20 +231,131 @@ async def _first_system_id(session: AsyncSession, org_id: int | None) -> int | N
     return (await session.execute(stmt)).scalars().first()
 
 
+#: The statuses each register accepts, as its API validates them.
+_IMPORT_STATUSES: dict[type, tuple[str, ...]] = {
+    Risk: ("open", "mitigated", "accepted", "closed"),
+    POAM: POAM_STATUSES,
+}
+
+
+def _gated_status_change(model: type, old: str | None, new: str) -> str | None:
+    """Why an import may not make this status change, or None.
+
+    Accepting a risk, and closing a POA&M, accepting its risk or reopening an
+    accepted one, are each a decision the API makes only against a spent
+    approval (``risks._require_acceptance_gate``, ``poams`` + ``approvals.consume``).
+    A bulk file is not that decision: the row is refused and the record keeps
+    its status. Re-importing an unchanged status is not a change."""
+    if new == old:
+        return None
+    if model is Risk and new == "accepted":
+        return "accepting a risk needs an approved review; accept it on the risk itself"
+    if model is POAM and (
+        new in POAM_CLOSED_STATUSES
+        or new == "risk_accepted"
+        or poam_leaves_risk_accepted(old or "", new)
+    ):
+        return f"moving a POA&M to {new!r} needs an approved review; change it on the POA&M itself"
+    return None
+
+
 def _apply_fields(obj: Any, row: dict[str, Any], spec: dict[str, Any]) -> None:
+    model = spec["model"]
+    if model in _IMPORT_STATUSES and "status" in row:
+        new = _clean(row["status"])
+        if new is not None:
+            if new not in _IMPORT_STATUSES[model]:
+                allowed = ", ".join(_IMPORT_STATUSES[model])
+                raise ValueError(f"status must be one of {allowed}, not {new!r}")
+            refused = _gated_status_change(model, getattr(obj, "status", None), new)
+            if refused:
+                raise ValueError(refused)
+    if model is Policy and "status" in row:
+        # A policy goes in force only through an approved version and retires
+        # only by an admin (``ccf.policies.service``). Retiring keeps the
+        # active version, so a file re-activating a retired policy put it back
+        # in force unreviewed. A new row starts as a draft.
+        new = _clean(row["status"])
+        held = getattr(obj, "status", None) or "draft"
+        if new is not None and new != held:
+            raise ValueError(
+                f"a policy's status changes only on the policy itself (activating needs an "
+                f"approved version, retiring an admin), not to {new!r} by import"
+            )
+    if model is Policy and getattr(obj, "id", None) is not None and "next_review_on" in row:
+        # The API never moves a policy's next review -- activation sets it.
+        # Pushed out or cleared by a file, an overdue review stops showing.
+        new_review, held = _coerce_date(row["next_review_on"]), obj.next_review_on
+        if held is not None and (new_review is None or new_review > held):
+            raise ValueError(
+                "moving a policy's next review later, or clearing it, is not done by import; "
+                "putting a reviewed version in force sets it"
+            )
+    if model is POAM and getattr(obj, "status", None) == "risk_accepted" and "due_on" in row:
+        # ``due_on`` is the acceptance's expiry (the scanner keeps an accepted
+        # POA&M accepted until it passes). The API spends an approval on any
+        # change but a shortening (``poams._require_expiry_extension_gate``).
+        new_due, held = _coerce_date(row["due_on"]), obj.due_on
+        if new_due != held and not (new_due is not None and held is not None and new_due <= held):
+            raise ValueError(
+                "extending a risk acceptance's expiry (due_on) needs an approved review; "
+                "change it on the POA&M itself"
+            )
+    if (
+        model is POAM
+        and getattr(obj, "id", None) is not None
+        and getattr(obj, "status", None) != "risk_accepted"
+        and "due_on" in row
+    ):
+        # A due date moving later -- or cleared, which is the same without a
+        # limit -- is a deviation the API takes only as an extension the ISSM
+        # or AO decides (``ccf.ato.extensions``). Whatever the status: a closed
+        # POA&M's date moved out here would be carried by a later reopen.
+        new_due, held = _coerce_date(row["due_on"]), obj.due_on
+        if held is not None and (new_due is None or new_due > held):
+            raise ValueError(
+                "moving a POA&M's due date later needs an approved extension; "
+                "request one on the POA&M itself"
+            )
+    # Every value is worked out before any is assigned: a row refused halfway
+    # (a malformed date, a bad score) must leave an existing record exactly as
+    # it was, now that the import is committed.
+    values: dict[str, Any] = {}
     for f in spec["str_fields"]:
         if f in row:
-            setattr(obj, f, _clean(row[f]))
+            if f == "status" and (model in _IMPORT_STATUSES or model is Policy) and (
+                _clean(row[f]) is None
+            ):
+                continue  # a blank cell leaves the status as it is
+            values[f] = _clean(row[f])
     for f in spec["date_fields"]:
         if f in row:
-            setattr(obj, f, _coerce_date(row[f]))
+            values[f] = _coerce_date(row[f])
     if spec["model"] is Risk:
-        inherent, residual = compute_scores(
-            getattr(obj, "likelihood", None),
-            getattr(obj, "impact", None),
-            getattr(obj, "treatment", None),
+        # The 1-5 score is the source of truth and the level follows it
+        # (governance.risk.resolve_axis). An import that sets only the level
+        # used to leave the score where it was, so the two could disagree and
+        # the risk was placed by a score nobody had entered.
+        for axis in ("likelihood", "impact"):
+            raw = row.get(f"{axis}_score")
+            try:
+                score = int(raw) if raw is not None and raw != "" else None
+            except (TypeError, ValueError) as exc:
+                raise ValueError(f"{axis}_score must be a whole number 1-5, not {raw!r}") from exc
+            new_score, new_level = resolve_axis(
+                axis=axis,
+                score=score,
+                level=values[axis] if axis in values else getattr(obj, axis, None),
+                current_score=getattr(obj, f"{axis}_score", None),
+            )
+            values[f"{axis}_score"] = new_score
+            values[axis] = new_level
+        treatment = values.get("treatment", getattr(obj, "treatment", None))
+        values["inherent_score"], values["residual_score"] = compute_scores(
+            values["likelihood_score"], values["impact_score"], treatment
         )
-        obj.inherent_score, obj.residual_score = inherent, residual
+    for f, v in values.items():
+        setattr(obj, f, v)
 
 
 async def import_rows(
@@ -261,6 +381,10 @@ async def import_rows(
     system_id = await _first_system_id(session, org_id) if link == "system" else None
 
     summary: dict[str, Any] = {"created": 0, "updated": 0, "skipped": 0, "errors": []}
+    # What actually changed, for the summary events: created rows, and updated
+    # rows whose values really moved (a round-trip of an untouched export
+    # changes nothing and announces nothing).
+    changed: list[tuple[Any, str]] = []
     for i, row in enumerate(rows):
         try:
             if not _clean(row.get(required)):
@@ -273,6 +397,8 @@ async def import_rows(
                 obj = await session.get(model, rid)
                 _apply_fields(obj, row, spec)
                 summary["updated"] += 1
+                if session.is_modified(obj):
+                    changed.append((obj, "updated"))
                 continue
             obj = model()
             _apply_fields(obj, row, spec)
@@ -286,10 +412,60 @@ async def import_rows(
                 obj.organization_id = org_id
             session.add(obj)
             summary["created"] += 1
+            changed.append((obj, "created"))
         except (ValueError, TypeError) as exc:
             summary["skipped"] += 1
             summary["errors"].append(f"row {i + 1}: {exc}")
 
     await session.flush()
+    await _emit_import(session, dataset, changed, org_id=org_id)
     summary["errors"] = summary["errors"][:20]  # cap noise
     return summary
+
+
+#: The event each importable view-input register announces an import as: one
+#: per system (or per org, where a row names none), never one per row.
+_IMPORT_EVENT = {"poams": "poam", "risks": "risk", "vendors": "vendor"}
+
+
+async def _emit_import(
+    session: AsyncSession, dataset: str, changed: list[tuple[Any, str]], *, org_id: int | None
+) -> None:
+    """One ``<entity> updated`` summary per affected system or org.
+
+    A POA&M import changes the system's graph and its VER deliverables, a risk
+    or vendor import its org's graph (all three pairs are triggers). Policies
+    enter no derived view. Each event takes the records' organization: the
+    system's for a system-linked row, else the row's own.
+    """
+    entity_type = _IMPORT_EVENT.get(dataset)
+    if entity_type is None or not changed:
+        return
+    from . import bus  # noqa: PLC0415 -- avoid an import cycle
+
+    groups: dict[tuple[int | None, int | None], dict[str, int]] = {}
+    system_orgs: dict[int, int | None] = {}  # one lookup per system, not per row
+    for obj, how in changed:
+        system_id = getattr(obj, "system_id", None)
+        if system_id is not None:
+            if system_id not in system_orgs:
+                system_orgs[system_id] = await bus.system_org(session, system_id)
+            org = system_orgs[system_id]
+        else:
+            org = getattr(obj, "organization_id", None)
+        counts = groups.setdefault((org, system_id), {"created": 0, "updated": 0})
+        counts[how] += 1
+    for (org, system_id), counts in groups.items():
+        payload: dict[str, Any] = {"import": dataset, **counts}
+        if system_id is not None:
+            payload["system_id"] = system_id
+        await bus.emit(
+            session,
+            verb="updated",
+            entity_type=entity_type,
+            summary=(
+                f"Import of {dataset}: {counts['created']} created, {counts['updated']} updated"
+            ),
+            org_id=org if org is not None else org_id,
+            payload=payload,
+        )

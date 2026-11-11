@@ -25,7 +25,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..models import KSI, Control, Framework, FrameworkMapping, SSPControlEntry, SSPProject, System
+from ..models import Control, Framework, FrameworkMapping, SSPControlEntry, SSPProject, System
 from .diff import CatalogDiff
 from .oscal import OscalCatalog
 from .reconcile import MappingRow, check_mapping_endpoints
@@ -156,7 +156,10 @@ async def _ksi_references(session: AsyncSession, gone: set[str]) -> list[dict[st
         return []
     # The KSI catalog is small (tens of rows), so filtering in Python is
     # clearer than a JSONB containment query and costs nothing.
-    ksis = (await session.execute(select(KSI))).scalars().all()
+    from ..fedramp20x.catalog import current_ksis  # noqa: PLC0415
+
+    # Retired indicators reference nothing a revision could break.
+    ksis = (await session.execute(current_ksis())).scalars().all()
     out: list[dict[str, Any]] = []
     for k in ksis:
         lost = sorted(gone.intersection(str(r) for r in (k.nist_refs or [])))

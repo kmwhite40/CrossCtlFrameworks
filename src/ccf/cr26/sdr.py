@@ -29,6 +29,11 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ..fedramp20x import frr_scope
+from ..fedramp20x.applicability import system_scope
+from ..fedramp20x.catalog import current_ksis
+from ..fedramp20x.methods import tier0_check_status
+from ..fedramp20x.rules import ConsolidatedRules, frr_ids, ksi_ids, load_rules
 from ..models import (
     KSI,
     KSIAssessorReview,
@@ -580,16 +585,24 @@ def merge_indicators(
 
 def merge_requirements(
     authored: Sequence[Any],
+    *,
+    known_frr_ids: frozenset[str] | None = None,
+    rules_version: str | None = None,
 ) -> tuple[list[dict[str, Any]], list[tuple[str, str]]]:
     """Filter and repair ``fedRampRequirements``, entirely authored narrative.
 
-    Unlike ``keySecurityIndicators``, nothing here is derived: there is no
-    machine-readable FedRAMP ruleset to check an ``frrID`` against (see
-    :func:`seed_sdr`'s docstring), and each entry's ``frrImplementation`` is a
-    written description of how the offering meets the requirement -- exactly
-    the kind of content only a human can supply, like ``ksiImplementation``.
-    So this function has no ``derived`` half to merge in; it only decides
-    which authored entries are honest enough to keep.
+    Unlike ``keySecurityIndicators``, nothing here is derived: each entry's
+    ``frrImplementation`` is a written description of how the offering meets
+    the requirement -- exactly the kind of content only a human can supply,
+    like ``ksiImplementation``. So this function has no ``derived`` half to
+    merge in; it only decides which authored entries are honest enough to keep.
+
+    ``known_frr_ids`` is the requirement-ID set of the pinned FedRAMP
+    Consolidated Rules (:func:`ccf.fedramp20x.rules.frr_ids`). An entry whose
+    ``frrID`` is not in it is **kept** -- its narrative is human work, and a
+    typo'd ID is the commonest cause -- but named on the to-do list, because
+    the document would otherwise cite a requirement the current rules do not
+    define and nothing in its JSON would say so. ``None`` skips the check.
 
     The returned list is an operator TO-DO LIST, not a list of absences --
     the same distinction the VER family's ninth omission case draws (spec
@@ -778,6 +791,14 @@ def merge_requirements(
                 # is true of the not-a-list branch above but false here.
                 notes.append((frr_id, f"{field} entry dropped: not a string"))
 
+        if known_frr_ids is not None and frr_id not in known_frr_ids:
+            notes.append(
+                (
+                    frr_id,
+                    "frrID not defined by FedRAMP Consolidated Rules "
+                    f"{rules_version or '(pinned)'}: kept, correct before submission",
+                )
+            )
         if frr_id in seen_ids:
             notes.append((frr_id, "duplicate authored entry kept"))
         seen_ids.add(frr_id)
@@ -871,22 +892,30 @@ def _assessment_statements(review: KSIAssessorReview | None) -> list[str]:
     return [statement]
 
 
-def _tests(ksi: KSI) -> list[str]:
-    """The test used to validate this indicator: method plus rule kind.
+def _tests(ksi: KSI, check_status: Mapping[str, str] | None = None) -> list[str]:
+    """The tests used to validate this indicator on this system.
 
-    ``KSI.rule`` is the machine-readable validation spec the 20x engine
-    evaluates; its ``kind`` is the only part of it that names a test rather
-    than restating the requirement.
+    A curated method (:mod:`ccf.fedramp20x.methods`) is a real automated test
+    -- a Concord posture check -- but only on a system where it has actually
+    run (``check_status``, from ``methods.tier0_check_status``). An M365-only
+    system's SDR must not list AWS checks as tests it uses. The rule's
+    ``kind`` is named too unless it is ``manual``, which is the absence of a
+    defined test, not a test.
     """
+    from ..fedramp20x.methods import RAN, platform_checks  # noqa: PLC0415
+
+    checks = platform_checks()
+    status = check_status or {}
+    out = [
+        f"Automated: {checks[m['check']].title} ({m['check']})"
+        for m in (ksi.methods or [])
+        if m.get("check") in checks and status.get(m["check"]) in RAN
+    ]
     method = (ksi.validation_method or "").strip()
     kind = str((ksi.rule or {}).get("kind") or "").strip()
-    if method and kind:
-        return [f"{method} validation (rule kind: {kind})"]
-    if method:
-        return [f"{method} validation"]
-    if kind:
-        return [f"rule kind: {kind}"]
-    return []
+    if kind and kind != "manual":
+        out.append(f"{method} validation (rule kind: {kind})" if method else f"rule kind: {kind}")
+    return out
 
 
 def _evidence(result: KSIValidationResult | None) -> list[dict[str, str]]:
@@ -915,10 +944,14 @@ def _evidence(result: KSIValidationResult | None) -> list[dict[str, str]]:
 async def _derived_indicators(
     session: AsyncSession, system_id: int
 ) -> dict[str, dict[str, Any]]:
-    """Every catalog indicator's derived facts for this system, by ``ksiId``.
+    """Derived facts for every indicator this system owes, by ``ksiId``.
+
+    "Owes" is :mod:`ccf.fedramp20x.applicability`: required or optional for
+    its Certification Class and Path, or every current indicator when no
+    class is recorded.
 
     Keyed on :attr:`KSI.identifier` because that is what the document's
-    ``ksiId`` carries. Every catalog KSI appears, including ones this system
+    ``ksiId`` carries. Every owed KSI appears, including ones this system
     has never validated: an indicator with nothing recorded still belongs on
     the deliverable's to-do list, which is what :func:`merge_indicators`
     turns the unauthored ones into.
@@ -927,7 +960,12 @@ async def _derived_indicators(
     ``ksi_validation_results.ksi_identifier``, since the foreign key is the
     column the database actually guarantees.
     """
-    ksis = (await session.execute(select(KSI))).scalars().all()
+    scope = await system_scope(session, system_id)
+    # Only what the Class/Path owes. (FedRAMP's SDR rules themselves apply to
+    # Classes B-D; a Class A provider is not required to file one, but if it
+    # does, the indicators it addresses are FRC-CLA-MFR's seven.)
+    ksis = scope.owed(list((await session.execute(current_ksis())).scalars().all()))
+    check_status = await tier0_check_status(session, system_id)
     if not ksis:
         return {}
 
@@ -968,7 +1006,7 @@ async def _derived_indicators(
         facts: dict[str, Any] = {
             "ksiValidation": _validation_statements(result),
             "ksiAssessment": _assessment_statements(reviews.get(ksi.id)),
-            "ksiTests": _tests(ksi),
+            "ksiTests": _tests(ksi, check_status),
             "ksiEvidence": _evidence(result),
         }
         state = states.get(ksi.id)
@@ -1031,6 +1069,43 @@ class SdrSeedResult:
     #: schema-invalid field silently emptied -- because that gap is just as
     #: real and just as invisible in the document's own JSON.
     omitted_requirements: list[tuple[str, str]]
+    #: ``keySecurityIndicators`` entries whose ``ksiId`` the pinned FedRAMP
+    #: Consolidated Rules do not define. They are KEPT (see
+    #: :func:`merge_indicators`: a narrative is human work), and the document
+    #: validates, so this list is the only thing that says the deliverable
+    #: cites an indicator FedRAMP's current rules do not have -- typically a
+    #: phase-one ``KSI-IAM-01`` written before the 2026 catalog cut-over.
+    undefined_ksi_ids: list[str]
+    #: Authored entries on KSIs FedRAMP defines but this system's Certification
+    #: Class/Path does not owe (``ccf.fedramp20x.applicability``). Kept as
+    #: human work, no longer refreshed, status claim dropped.
+    out_of_scope_ksi_ids: list[str]
+    #: The ruleset revision both checks were made against.
+    rules_version: str
+    #: MUST / MUST NOT requirements in force today that this system owes under
+    #: every certification scenario still possible for its Class and Path
+    #: (``ccf.fedramp20x.frr_scope``) with no authored ``fedRampRequirements``
+    #: entry. The requirements half of the to-do list, as ``omitted_ksi_ids``
+    #: is the indicators half. Empty when no Class is recorded.
+    frr_unaddressed: list[str]
+
+
+async def _frr_unaddressed(
+    session: AsyncSession,
+    system: System,
+    rendered: list[dict[str, Any]],
+    rules: ConsolidatedRules,
+) -> list[str]:
+    """Hard requirements owed in every possible scenario, not yet authored."""
+    scoped = frr_scope.scope(rules, system.certification_class, system.certification_path)
+    authored = {str(e.get("frrID")) for e in rendered}
+    # Only what is in force today: a Rev5 rule that obtains 2027-01-01 is not
+    # yet owed, and putting it on today's to-do list would say it is.
+    return sorted(
+        r["id"]
+        for r in scoped["owed"]
+        if r["force"] in frr_scope.HARD and r["in_force"] and r["id"] not in authored
+    )
 
 
 async def _current(
@@ -1126,17 +1201,38 @@ async def seed_sdr(session: AsyncSession, *, system_id: int) -> SdrSeedResult:
     document["securityControls"] = controls
 
     authored = document.get("keySecurityIndicators")
+    derived = await _derived_indicators(session, system_id)
     merged, omitted = merge_indicators(
         [entry for entry in authored if isinstance(entry, dict)]
         if isinstance(authored, list)
         else [],
-        await _derived_indicators(session, system_id),
+        derived,
     )
     document["keySecurityIndicators"] = merged
 
+    rules = load_rules()
+    defined_ksis = ksi_ids(rules)
+    undefined = sorted({e["ksiId"] for e in merged if e["ksiId"] not in defined_ksis})
+    out_of_scope = sorted(
+        {e["ksiId"] for e in merged if e["ksiId"] not in derived and e["ksiId"] in defined_ksis}
+    )
+    for entry in merged:
+        if entry["ksiId"] in derived:
+            continue
+        # merge_indicators keeps an entry it did not refresh with its last
+        # derived facts, so the document stays valid. Whether the indicator is
+        # retired or simply not owed by this system's Certification Class, this
+        # seed did not refresh it and the next will not either -- so an
+        # optional implementation status left there is a frozen claim that can
+        # outlive a later failure. Drop it; the required arrays stay as the
+        # history they are.
+        entry.pop("ksiImplementationStatus", None)
+
     authored_requirements = document.get("fedRampRequirements")
     rendered_requirements, omitted_requirements = merge_requirements(
-        authored_requirements if isinstance(authored_requirements, list) else []
+        authored_requirements if isinstance(authored_requirements, list) else [],
+        known_frr_ids=frr_ids(rules),
+        rules_version=rules.version,
     )
     document["fedRampRequirements"] = rendered_requirements
 
@@ -1149,4 +1245,8 @@ async def seed_sdr(session: AsyncSession, *, system_id: int) -> SdrSeedResult:
         controls_with_dropped_parts=dropped_parts,
         rendered_control_count=len(controls),
         omitted_requirements=omitted_requirements,
+        undefined_ksi_ids=undefined,
+        out_of_scope_ksi_ids=out_of_scope,
+        frr_unaddressed=await _frr_unaddressed(session, system, rendered_requirements, rules),
+        rules_version=rules.version,
     )

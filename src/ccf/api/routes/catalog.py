@@ -25,7 +25,7 @@ from ...catalog.revisions import (
 from ...db import session_scope
 from ...etl.sources import check_source
 from ...models import CatalogCheck, CatalogRevision, CatalogSource
-from ..auth_deps import require_role
+from ..auth_deps import require_platform_admin, require_role
 from ..deps import get_session
 
 router = APIRouter(prefix="/api/catalog", tags=["catalog"])
@@ -103,6 +103,10 @@ async def list_checks(
 async def check_now(
     source_id: int,
     session: AsyncSession = Depends(get_session),
+    # Catalog sources are platform-wide, and a check can now ingest (the
+    # FedRAMP Marketplace writes the global marketplace_products table): a
+    # platform operation, not any tenant member's.
+    _principal: Principal = Depends(require_platform_admin()),
 ) -> dict[str, Any]:
     """Poll one source immediately and return the resulting check."""
     source = (

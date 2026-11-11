@@ -2,25 +2,32 @@
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
+import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import cast
 
 from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
+from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.base import RequestResponseEndpoint
 from starlette.types import ExceptionHandler
 
 from ..config import enforce_secure_config, get_settings, is_dev_env
+from ..events import worker as event_worker
 from ..logging import configure_logging, get_logger
 from .audit import audit_middleware
 from .auth_deps import auth_gate_middleware
 from .csrf import CsrfOriginMiddleware
+from .errors import html_aware_http_exception, html_aware_validation_error
 from .limiter import limiter
 from .metrics import metrics_endpoint, metrics_middleware
 from .routes import (
@@ -57,6 +64,7 @@ from .routes import (
     insights,
     mappings,
     notifications,
+    notify_channel,
     oscal,
     packages,
     packs,
@@ -65,6 +73,7 @@ from .routes import (
     poams,
     policies,
     portal,
+    portal_requests,
     posture,
     prep,
     queries,
@@ -80,9 +89,23 @@ from .routes import (
     systems,
     tasks,
     ui,
+    ui_assure,
+    ui_ato,
+    ui_auditprog,
     ui_boundary,
+    ui_crosswalk,
+    ui_govern,
     ui_grc,
+    ui_history,
+    ui_intel,
+    ui_modules,
+    ui_platform,
+    ui_policies,
+    ui_riskprog,
+    ui_tprmprog,
+    ui_vdr,
     users,
+    vdr,
     vendors,
     waivers,
     worksheets,
@@ -94,6 +117,35 @@ log = get_logger(__name__)
 STATIC_DIR = Path(__file__).parent / "static"
 
 
+async def _event_drain_inline_loop(interval: float, reap_interval: float = 300.0) -> None:
+    """Drain the outbox from inside the API process (the dev loop, no worker).
+
+    One job per tick. A failing or hung drain is logged and the loop carries on:
+    it must never take the API down or stop draining. A drain that times out (or
+    is cancelled at shutdown) after claiming a job leaves it ``claimed``, and a
+    claimed job blocks its scope, so stale claims are reaped here too: on the
+    first iteration and then every ``reap_interval`` (as ``ccf event-worker`` does).
+    """
+    last_reap = float("-inf")
+    while True:
+        current = time.monotonic()
+        if current - last_reap >= reap_interval:
+            last_reap = current
+            try:
+                await event_worker.reap()
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                log.warning("event_drain_inline.reap_failed", error=type(e).__name__)
+        try:
+            await asyncio.wait_for(event_worker.drain_once(worker="api-inline", limit=1), 120)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            log.warning("event_drain_inline.failed", error=type(e).__name__)
+        await asyncio.sleep(interval)
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     configure_logging()
@@ -101,7 +153,17 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     from ..governance import scheduler  # noqa: PLC0415 — lazy to keep factory import light
 
     scheduler.start()  # no-op unless CCF_SCHEDULER_ENABLED
+    settings = get_settings()
+    inline: asyncio.Task[None] | None = None
+    if settings.event_drain_inline and not settings.event_worker_enabled:
+        inline = asyncio.create_task(
+            _event_drain_inline_loop(settings.event_drain_interval_seconds)
+        )
     yield
+    if inline is not None:
+        inline.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await inline
     await scheduler.stop()
     log.info("api.shutdown")
 
@@ -111,6 +173,10 @@ def create_app() -> FastAPI:
     # Fail closed on insecure configuration outside dev (IA-01/IA-11).
     for _warning in enforce_secure_config(settings):
         log.warning("config.insecure_default", detail=_warning)
+    from ..governance import delivery as _delivery  # noqa: PLC0415
+
+    for _warning in _delivery.config_warnings(settings):
+        log.warning("config.notify_incomplete", detail=_warning)
     app = FastAPI(
         title="Concord",
         version="0.2.0",
@@ -121,6 +187,13 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
     app.state.limiter = limiter
+    # People get a page; API clients get the JSON they always did (errors.py).
+    app.add_exception_handler(
+        StarletteHTTPException, cast(ExceptionHandler, html_aware_http_exception)
+    )
+    app.add_exception_handler(
+        RequestValidationError, cast(ExceptionHandler, html_aware_validation_error)
+    )
     app.add_exception_handler(
         RateLimitExceeded,
         cast(ExceptionHandler, _rate_limit_exceeded_handler),
@@ -206,6 +279,9 @@ def create_app() -> FastAPI:
     app.include_router(portal.router)
     app.include_router(portal.public_router)
     app.include_router(portal.ui_router)
+    app.include_router(portal_requests.admin_router)
+    app.include_router(portal_requests.public_router)
+    app.include_router(portal_requests.ui_router)
     app.include_router(queries.router)
     app.include_router(queries.ui_router)
     app.include_router(ai_actions.router)
@@ -213,6 +289,7 @@ def create_app() -> FastAPI:
     app.include_router(ai_settings.router)
     app.include_router(ai_settings.ui_router)
     app.include_router(connector_settings.router)
+    app.include_router(notify_channel.router)
     app.include_router(controls.router)
     app.include_router(frameworks.router)
     app.include_router(worksheets.router)
@@ -247,6 +324,7 @@ def create_app() -> FastAPI:
     app.include_router(poams.router)
     app.include_router(risks.router)
     app.include_router(scans.router)
+    app.include_router(vdr.router)
     app.include_router(personnel.router)
     app.include_router(questionnaires.router)
     app.include_router(users.router)
@@ -268,7 +346,20 @@ def create_app() -> FastAPI:
     app.include_router(insights.router)
     app.include_router(grc.router)
     app.include_router(ui_grc.router)
+    app.include_router(ui_ato.router)
+    app.include_router(ui_policies.router)
     app.include_router(ui_boundary.router)
+    app.include_router(ui_modules.router)
+    app.include_router(ui_assure.router)
+    app.include_router(ui_auditprog.router)
+    app.include_router(ui_govern.router)
+    app.include_router(ui_history.router)
+    app.include_router(ui_intel.router)
+    app.include_router(ui_vdr.router)
+    app.include_router(ui_crosswalk.router)
+    app.include_router(ui_platform.router)
+    app.include_router(ui_riskprog.router)
+    app.include_router(ui_tprmprog.router)
     app.include_router(ui.router)
     return app
 

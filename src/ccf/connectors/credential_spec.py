@@ -43,6 +43,9 @@ class CredentialField:
     #: the first pair is the default -- which is how "US Government unless
     #: someone deliberately chooses otherwise" is expressed.
     choices: tuple[tuple[str, str], ...] = ()
+    #: Concord sets this value; it is never an input. The form shows it, and
+    #: ``set_credential`` discards any value a request supplies for it.
+    generated: bool = False
 
 
 @dataclass(frozen=True)
@@ -150,6 +153,15 @@ SPECS: dict[str, CredentialSpec] = {
             CredentialField("access_key_id", "Access key ID"),
             CredentialField("secret_access_key", "Secret access key", secret=True),
             CredentialField(
+                "role_arn",
+                "Role ARN (recommended)",
+                help=(
+                    "A role in your account named ConcordConnector..., trusting Concord's "
+                    "broker with the External ID shown below. No long-lived key changes hands."
+                ),
+            ),
+            CredentialField("external_id", "External ID", generated=True),
+            CredentialField(
                 "profile",
                 "Named profile",
                 help="Alternative to an access key pair, for a host with a shared config.",
@@ -165,9 +177,14 @@ SPECS: dict[str, CredentialSpec] = {
                 ),
             ),
         ),
-        accepts=(("access_key_id", "secret_access_key"), ("profile",)),
+        accepts=(
+            ("access_key_id", "secret_access_key"),
+            ("role_arn", "external_id"),
+            ("profile",),
+        ),
         doc=(
-            "Either an access key pair or a named profile, in the aws-us-gov "
+            "An access key pair, a role Concord assumes with an External ID, or a "
+            "named profile, in the aws-us-gov "
             "partition. Capture additionally requires CCF_AWS_CAPTURE_ENABLED and "
             "the boto3 package."
         ),

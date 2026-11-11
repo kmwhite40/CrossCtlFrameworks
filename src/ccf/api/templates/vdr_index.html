@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% block title %}20x Vulnerability Response · Concord{% endblock %}
+{% block heading %}20x Vulnerability Response{% endblock %}
+{% block subtitle %}Every system's scan findings against the FedRAMP 20x VDR timeframes for its certification class: evaluation, mitigation, CISA KEV due dates and the 192-day acceptance rule.{% endblock %}
+{% block content %}
+<article class="card panel">
+  <header class="panel__head"><h2 class="panel__title">Systems</h2>
+    <span class="panel__hint">Rules dataset {{ rules_version }} · in force for 20x from 2026-12-07</span></header>
+  {% if rows %}
+  <div class="table-wrap"><table>
+    <thead><tr><th>System</th><th>Class</th><th title="Breaching at least one VDR/VER timeframe">Overdue</th><th>Awaiting evaluation</th><th>Within</th><th title="N0/N1, accepted, false positive, or no class">Other open</th><th>Detection</th></tr></thead>
+    <tbody>{% for s, v in rows %}{% set c = v.counts %}<tr>
+      <td><a href="/systems/{{ s.id }}/vdr">{{ s.name }}</a></td>
+      <td>{% if v.certification_class %}Class {{ v.certification_class }}{% else %}<span class="chip chip--warn" title="No class timeframes can be applied until a class is set">not set</span>{% endif %}</td>
+      <td>{% if c.overdue %}<span class="kpi__value--danger"><strong>{{ c.overdue }}</strong></span>{% else %}0{% endif %}</td>
+      <td>{{ c.awaiting_evaluation }}</td>
+      <td>{{ c.within }}</td>
+      <td>{{ c.no_timeframe + c.class_not_set + c.accepted + c.false_positive }}</td>
+      <td>{% if not v.cadence %}<span class="chip chip--warn">no scan recorded</span>{% else %}{% for k in v.cadence %}<span class="chip {% if k.stale %}chip--err{% elif k.stale is none %}chip--ghost{% else %}chip--ok{% endif %}">{{ k.scanner }} · {{ k.age_days }}d</span> {% endfor %}{% endif %}</td>
+    </tr>{% endfor %}</tbody>
+  </table></div>
+  {% else %}
+  <p class="panel__empty">No systems in this organization.</p>
+  {% endif %}
+</article>
+{% endblock %}

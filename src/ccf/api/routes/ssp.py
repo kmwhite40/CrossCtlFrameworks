@@ -14,7 +14,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
 from slugify import slugify
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -23,7 +23,8 @@ from ...auth import Principal
 from ...connectors import get_connector, list_connectors
 from ...connectors.credentials import resolve_credential
 from ...connectors.readiness import provider_readiness
-from ...governance import automation
+from ...constants import SSP_APPROVED_STATUSES, SSP_AUTHOR_STATUSES
+from ...governance import approvals, automation
 from ...models import (
     SSPControlEntry,
     SSPProject,
@@ -142,7 +143,12 @@ class ProjectUpdate(BaseModel):
     version: str | None = None
     prepared_by: str | None = None
     document_date: date | None = None
-    status: str | None = None
+    #: Any SSP status may be sent (a whole-form client re-sends the one it was
+    #: given), but update_project only lets an author MOVE to an author status.
+    #: Approval is a reviewer's decision, made through /api/approvals.
+    status: str | None = Field(
+        None, pattern=r"^(" + "|".join((*SSP_AUTHOR_STATUSES, *SSP_APPROVED_STATUSES)) + r")$"
+    )
 
 
 def _validate_vocabulary(
@@ -434,7 +440,6 @@ async def set_metadata(
 class RevisionIn(BaseModel):
     version: str
     date: str | None = None
-    author: str | None = None
     notes: str | None = None
 
 
@@ -445,10 +450,14 @@ async def add_revision(
     session: AsyncSession = Depends(get_session),
     principal: Principal = Depends(require_role(*AUTHOR_ROLES)),
 ) -> dict[str, Any]:
-    """Append a revision-history entry (and bump the project version)."""
+    """Append a revision-history entry (and bump the project version).
+
+    The author is whoever records it: the document prints this log, so an
+    author named by the client could attribute a revision to anyone. Changing
+    the log of an approved plan sends it back for review (migration 0113).
+    """
     proj = await _require_project(session, project_id, principal)
-    rev = body.model_dump()
-    rev["author"] = rev.get("author") or principal.email
+    rev = {**body.model_dump(), "author": principal.email}
     proj.revision_history = [*(proj.revision_history or []), rev]
     proj.version = body.version
     await session.commit()
@@ -689,7 +698,23 @@ async def update_project(
     principal: Principal = Depends(require_role(*AUTHOR_ROLES)),
 ) -> ProjectOut:
     proj = await _require_project(session, project_id, principal)
-    for k, v in body.model_dump(exclude_none=True).items():
+    data = body.model_dump(exclude_none=True)
+    new_status = data.pop("status", None)
+    if new_status is not None and new_status != proj.status:
+        if new_status in SSP_APPROVED_STATUSES:
+            raise HTTPException(
+                422,
+                "approval is a reviewer's decision: submit the plan through /api/approvals",
+            )
+        if proj.status in SSP_APPROVED_STATUSES:
+            # Withdrawing an approved plan returns its approval to draft too.
+            # Left approved, the row made the plan unapprovable: submit()
+            # refuses an approved entity and decide() needs a submitted one.
+            await approvals.consume(
+                session, entity_type="ssp_project", entity_id=proj.id, actor=principal.email
+            )
+        proj.status = new_status
+    for k, v in data.items():
         setattr(proj, k, require_platform(v) if k == "platform" else v)
     await session.commit()
     await session.refresh(proj)

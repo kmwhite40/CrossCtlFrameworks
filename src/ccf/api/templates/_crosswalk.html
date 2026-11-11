@@ -1,0 +1,87 @@
+{# The crosswalk of one certification package. Context: model, states, notice, export_base, cls_param. #}
+{% macro state_chip(states, s) %}<span class="chip {% if s == 'documented' or s == 'traced' %}chip--ok{% elif s == 'partly_reported' %}chip--info{% elif s == 'needs_review' %}chip--warn{% elif s == 'not_reported' %}chip--err{% else %}chip--ghost{% endif %}" title="{{ states[s][1] }}">{{ states[s][0] }}</span>{% endmacro %}
+
+{% macro crosswalk(model, states, notice, export_base) %}
+<div class="note" role="note" style="margin-bottom:16px">{{ notice }}</div>
+
+<section class="kpi-grid kpi-grid--4" aria-label="Coverage by state">
+  {% for key, label in states.items() %}
+  <div class="kpi"><span class="kpi__label">{{ label[0] }}</span>
+    <span class="kpi__value">{{ model.counts[key] }}</span>
+    <span class="kpi__meta" title="{{ label[1] }}">of {{ model.total }} Class {{ model.cls }} controls</span></div>
+  {% endfor %}
+</section>
+
+<article class="card panel" style="margin-top:16px">
+  <header class="panel__head"><h2 class="panel__title">Is the package complete?</h2>
+    <span class="panel__hint">{% if model.certification_type %}{{ model.certification_type }} certification{% else %}certification type not stated{% endif %}{% if model.certification_path %} · {{ model.certification_path }} path{% endif %} · FedRAMP rules {{ model.rules_version }}</span></header>
+  <div class="panel__body">
+    {% set k = model.completeness.ksi %}{% set f = model.completeness.frr %}
+    <p><strong>Key Security Indicators:</strong> {% if k.expected is none %}not known which are owed{% elif k.expected %}{{ k.reported }} of {{ k.expected }} required reported{% else %}none required{% endif %}. <span class="dim">{{ k.basis }}</span>{% if k.optional %} <span class="dim">{{ k.optional | length }} optional for this class.</span>{% endif %}</p>
+    {% if k.missing %}<details><summary>{{ k.missing | length }} required indicator{{ 's' if k.missing | length != 1 }} not reported</summary><p class="mono" style="overflow-wrap:anywhere">{{ k.missing | join(', ') }}</p></details>{% endif %}
+    <p><strong>FedRAMP rules:</strong> {% if f.expected is none %}not known which apply: the package does not state whether it is a Rev5 or 20x certification.{% else %}{{ f.reported }} of {{ f.expected }} applicable reported. <span class="dim">Applicability is read from each rule's type, class{% if f.path_applied %}, path{% endif %} and affected parties{% if not f.path_applied %}; the certification path is not known, so rules for either path are counted{% endif %}; effective dates are not checked.</span>{% endif %}</p>
+    {% if f.missing %}<details><summary>{{ f.missing | length }} applicable rule{{ 's' if f.missing | length != 1 }} not reported</summary><p class="mono" style="overflow-wrap:anywhere">{{ f.missing | join(', ') }}</p></details>{% endif %}
+    {% if model.unknown.ksi or model.unknown.frr or model.unknown.controls %}
+    <p><span class="chip chip--warn">Not recognised</span> The package names {% if model.unknown.ksi %}indicators {{ model.unknown.ksi | join(', ') }}{% endif %}{% if model.unknown.frr %} rules {{ model.unknown.frr | join(', ') }}{% endif %}{% if model.unknown.controls %} control IDs {{ model.unknown.controls | join(', ') }}{% endif %} that FedRAMP's rules {{ model.rules_version }} do not define. They are not counted.</p>
+    {% endif %}
+    {% if model.outside_baseline %}<p class="dim">The provider documents {{ model.outside_baseline | length }} control{{ 's' if model.outside_baseline | length != 1 }} outside the Class {{ model.cls }} baseline: {{ model.outside_baseline | join(', ') }}.</p>{% endif %}
+  </div>
+</article>
+
+<article class="card panel" style="margin-top:16px" id="controls">
+  <header class="panel__head"><h2 class="panel__title">Controls</h2>
+    <span class="panel__hint"><a href="{{ export_base }}/controls.csv?cls={{ model.cls }}">Controls CSV</a> · <a href="{{ export_base }}/determinations.csv?cls={{ model.cls }}">Agency determinations CSV</a></span></header>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Control</th><th>Coverage</th><th>Mapped</th><th>Not reported</th><th>Provider's own entry</th><th>What the agency does</th></tr></thead>
+    <tbody>{% for c in model.controls %}<tr id="ctl-{{ c.id }}">
+      <td><strong class="mono">{{ c.id }}</strong>{% if c.title %}<div class="dim" style="font-size:12px">{{ c.title }}</div>{% endif %}</td>
+      <td>{{ state_chip(states, c.state) }}{% if c.state == 'needs_review' %}<div class="dim" style="font-size:12px">{{ c.weak | join('; ') }}</div>{% endif %}</td>
+      <td>{% if c.mapped %}{{ c.reported | length }} of {{ c.mapped }} reported
+        <details><summary class="dim" style="font-size:12px">{{ c.ksi | length }} KSI · {{ c.frr | length }} rule{{ 's' if c.frr | length != 1 }}</summary>
+          <ul class="feed">{% for x in c.ksi + c.frr %}<li class="feed__item"><span class="mono">{{ x.id }}</span> {{ x.name }}{% if x.entry %} · <span class="chip {% if x.entry.implemented %}chip--ok{% else %}chip--warn{% endif %}">{{ x.entry.status or 'no status' }}</span>{% for s in x.entry.implementation[:2] %}<div class="dim clamp-3" style="font-size:12px">{{ s }}</div>{% endfor %}{% else %} · <span class="dim">not in the package</span>{% endif %}</li>{% endfor %}</ul>
+        </details>{% else %}<span class="dim">none</span>{% endif %}</td>
+      <td>{% if c.missing %}<span class="mono" style="font-size:12px;overflow-wrap:anywhere">{{ c.missing | join(', ') }}</span>{% else %}<span class="dim">—</span>{% endif %}</td>
+      <td>{% if c.direct %}<span class="chip {% if c.direct.implemented %}chip--ok{% else %}chip--warn{% endif %}">{{ c.direct.status or 'no status' }}</span>{% for s in c.direct.implementation[:1] %}<div class="dim clamp-3" style="font-size:12px">{{ s }}</div>{% endfor %}{% else %}<span class="dim">—</span>{% endif %}</td>
+      <td>{% if c.guidance %}<details><summary class="dim" style="font-size:12px">FedRAMP agency guidance</summary>{% for g in c.guidance %}{% if g.agency_actions %}<p style="font-size:13px">{% if g.part != '_' %}<strong>({{ g.part }})</strong> {% endif %}{{ g.agency_actions }}</p>{% endif %}{% endfor %}</details>{% else %}<span class="dim" title="FedRAMP publishes agency guidance for the Class C baseline controls only">none published</span>{% endif %}</td>
+    </tr>{% endfor %}</tbody>
+  </table></div>
+</article>
+
+<article class="card panel" style="margin-top:16px" id="register">
+  <header class="panel__head"><h2 class="panel__title">Vulnerability register</h2>
+    <span class="panel__hint">{% if model.register %}<a href="{{ export_base }}/register.csv?cls={{ model.cls }}">Register CSV</a> · {% endif %}one row per provider tracking ID; the newest report decides each row</span></header>
+  {% if model.register %}
+  <div class="table-wrap"><table>
+    <thead><tr><th>Tracking ID</th><th>Status</th><th>N-rating</th><th>Description</th><th>Overdue</th><th>As of</th><th>Reported in</th></tr></thead>
+    <tbody>{% for v in model.register %}<tr>
+      <td class="mono">{{ v.id }}</td>
+      <td><span class="chip {% if v.status == 'Open' %}chip--warn{% elif v.status == 'Accepted' %}chip--info{% else %}chip--ok{% endif %}">{{ v.status }}</span>{% if v.rationale %}<div class="dim clamp-3" style="font-size:12px">{{ v.rationale }}</div>{% endif %}</td>
+      <td>{% if v.rating is not none %}N{{ v.rating }}{% else %}<span class="dim">—</span>{% endif %}</td>
+      <td><div class="clamp-3">{{ v.description }}</div></td>
+      <td>{% if v.overdue %}<span class="chip chip--err">Overdue</span>{% if v.overdue_why %}<div class="dim clamp-3" style="font-size:12px">{{ v.overdue_why }}</div>{% endif %}{% else %}No{% endif %}</td>
+      <td>{{ v.as_of[:10] }}</td>
+      <td class="dim" style="font-size:12px">{{ v.sources | join('; ') }}</td>
+    </tr>{% endfor %}</tbody>
+  </table></div>
+  {% else %}<div class="panel__body"><p class="dim">The package holds no vulnerability report (VDR, accepted-vulnerability or history file).</p></div>{% endif %}
+</article>
+{% endmacro %}
+
+{% macro class_picker(action, classes, chosen, label) %}
+<form method="get" action="{{ action }}" class="filters" style="margin-bottom:16px">
+  <label class="dim" for="cls-pick">{{ label }}</label>
+  <select class="select" id="cls-pick" name="cls" required><option value="">Choose a class</option>{% for c in classes %}<option value="{{ c }}"{% if chosen == c %} selected{% endif %}>Class {{ c }}</option>{% endfor %}</select>
+  <button class="btn btn--secondary" type="submit"><i data-lucide="git-compare"></i>Read the package</button>
+</form>
+{% endmacro %}
+
+{% macro documents_table(docs, kinds) %}
+<div class="table-wrap"><table>
+  <thead><tr><th>Document</th><th>Held</th><th>Schema</th></tr></thead>
+  <tbody>{% for k, label in kinds.items() %}{% set d = docs.get(k) %}<tr>
+    <td>{{ label }}</td>
+    <td>{% if d %}<span class="chip chip--ok">held</span>{% else %}<span class="dim">not held</span>{% endif %}</td>
+    <td>{% if d %}{% if d.is_valid %}<span class="chip chip--ok">valid</span>{% else %}<span class="chip chip--warn" title="{{ (d.validation_errors or [])[:3] | join(' · ') }}">{{ (d.validation_errors or []) | length }} schema error{{ 's' if (d.validation_errors or []) | length != 1 }}</span>{% endif %}{% else %}<span class="dim">—</span>{% endif %}</td>
+  </tr>{% endfor %}</tbody>
+</table></div>
+{% endmacro %}

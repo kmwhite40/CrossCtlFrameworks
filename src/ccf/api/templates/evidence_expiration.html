@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+{% block title %}Evidence Expiration · Concord{% endblock %}
+{% block heading %}Evidence expiration{% endblock %}
+{% block subtitle %}Repository evidence that has expired or expires within 90 days, with its owner. Requesting a renewal opens one task per evidence object, assigned to the owner when the owner is the email of an active user of this organization; asking again while that task is open changes nothing.{% endblock %}
+{% block content %}
+{% if not view.scoped %}
+<div class="card empty-state"><i data-lucide="building-2"></i><h2>No organization in scope</h2><p>Expiry is tracked for one organization at a time. Global and unauthenticated sessions see this instead.</p></div>
+{% else %}
+{% if requested == 'new' %}<p class="note note--info">Renewal task opened.</p>{% elif requested == 'open' %}<p class="note note--info">A renewal task for this evidence was already open; no second task was created.</p>{% endif %}
+<section class="kpi-grid kpi-grid--4">
+  <div class="kpi"><span class="kpi__label">Expired</span><span class="kpi__value">{{ view.counts.expired }}</span><span class="kpi__meta">before {{ view.today }}</span></div>
+  {% set lo = namespace(v=0) %}
+  {% for w in view.windows %}
+  <div class="kpi"><span class="kpi__label">Expiring in {{ lo.v }}–{{ w }} days</span><span class="kpi__value">{{ view.counts['within_%d' % w] }}</span></div>
+  {% set lo.v = w + 1 %}
+  {% endfor %}
+</section>
+{% if view.rows %}
+<div class="table-wrap">
+  <table>
+    <thead><tr><th>Evidence</th><th>Control</th><th>System</th><th>Owner</th><th>Status</th><th>Expires</th><th>Renewal</th></tr></thead>
+    <tbody>{% for r in view.rows %}<tr id="ev-{{ r.id }}">
+      <td><a href="/evidence">{{ r.title }}</a></td>
+      <td>{% if r.control %}<span class="mono">{{ r.control }}</span>{% else %}<span class="dim">—</span>{% endif %}</td>
+      <td>{{ r.system or 'organization-wide' }}</td>
+      <td>{% if r.owner %}{{ r.owner }}{% if not r.owner_is_user %}<div class="dim">not a user of this organization; a renewal task would be unassigned</div>{% endif %}{% else %}<span class="dim">no owner</span>{% endif %}</td>
+      <td><span class="chip chip--ghost">{{ r.status }}</span></td>
+      <td>{% if r.bucket == 'expired' %}<span class="chip chip--err">expired {{ r.expires_on }}</span>{% else %}<span class="chip {% if r.days <= 30 %}chip--warn{% else %}chip--info{% endif %}">{{ r.expires_on }} · in {{ r.days }} day{{ 's' if r.days != 1 }}</span>{% endif %}</td>
+      <td>{% if r.task %}<a href="/my-tasks">Requested · task #{{ r.task.id }}</a>{% elif can_request %}<form method="post" action="/evidence/expiration/{{ r.id }}/renew"><button class="btn btn--secondary btn--sm" type="submit">Request renewal</button></form>{% else %}<span class="dim">an admin or control owner can request renewal</span>{% endif %}</td>
+    </tr>{% endfor %}</tbody>
+  </table>
+</div>
+{% else %}
+<div class="card empty-state"><i data-lucide="calendar-check"></i><h2>No evidence expires within 90 days</h2><p>No repository evidence object of this organization has an expiry date that has passed or falls in the next 90 days. Objects without an expiry date are not tracked here; set one on the <a href="/evidence">Evidence Repository</a>.</p></div>
+{% endif %}
+{% endif %}
+{% endblock %}

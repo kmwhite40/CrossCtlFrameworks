@@ -57,7 +57,7 @@
              (100 * e.passing|length / e.total, 'var(--ok-500)', 'satisfied'),
              (100 * e.failing|length / e.total, 'var(--err-500)', 'failing'),
              (100 * e.documented|length / e.total, 'var(--warn-500)', 'documented only'),
-             (100 * e.manual_review|length / e.total, 'var(--info-500, #6b8afd)', 'needs manual review'),
+             (100 * e.manual_review|length / e.total, 'var(--info-500)', 'needs manual review'),
            ] %}
           {% if width %}<span style="width:{{ width|round(2) }}%;background:{{ colour }}"
              title="{{ label }}"></span>{% endif %}
@@ -101,7 +101,7 @@
       </div>
       {% if e.failing %}
       <div style="margin-top:8px">
-        {% for c in e.failing %}<a class="chip chip--err" style="margin:0 6px 6px 0" href="/dashboard">{{ c }}</a>{% endfor %}
+        {% for c in e.failing %}<a class="chip chip--err" style="margin:0 6px 6px 0" href="/gaps">{{ c }}</a>{% endfor %}
       </div>
       {% endif %}
       {% if e.manual_review %}

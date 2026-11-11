@@ -382,7 +382,10 @@ class System(Base):
     )
     #: CR26 Certification Class. INDEPENDENT of ``baseline`` -- see
     #: ``ccf.constants.CERTIFICATION_CLASSES``. Never derive one from the other.
-    #: Null means "not CR26-certified", correct for every Rev5-lane row.
+    #: Null means "nobody has recorded one". Not a Rev5 marker: the 2026
+    #: rules give Rev5 certifications Classes B-D too (``IVV-CSF-AIA``). Which
+    #: KSIs a class owes also depends on ``certification_path`` -- see
+    #: ``ccf.fedramp20x.applicability``.
     #: ``validate_strings=True`` for the reason given on ``pipeline_stage``.
     certification_class: Mapped[str | None] = mapped_column(
         Enum(
@@ -435,6 +438,15 @@ class System(Base):
         default="none",
     )
     ato_expires_on: Mapped[date | None] = mapped_column(Date)
+    #: Organizational placement (0099); NULL until someone assigns it.
+    business_unit_id: Mapped[int | None] = mapped_column(
+        ForeignKey("ccf.business_units.id", ondelete="SET NULL")
+    )
+    #: The DoD Cloud Computing SRG impact level this system is authorized at
+    #: (IL2/IL4/IL5/IL6), when it is a DoD system. NULL means none declared,
+    #: and the checks that depend on it report not_applicable rather than
+    #: guessing one (``posture.parameters.SYSTEM_PARAMETERS``).
+    dod_impact_level: Mapped[str | None] = mapped_column(String(4))
     # DATA-04: soft-delete marker (see Organization.deleted_at). Set instead of
     # a hard DELETE so the CASCADE to poams/assessments/evidence/implementations/
     # risks never fires; NULL means active.
@@ -977,6 +989,11 @@ class POAM(Base):
     # to a rationale authored into the stored document before this column
     # existed.
     acceptance_rationale: Mapped[str | None] = mapped_column(Text)
+    #: Where ``acceptance_rationale`` came from when nobody typed it here: the
+    #: CR26 re-seed promoted it from a stored document (``ccf.cr26.ver``). Names
+    #: who last saved that document, when, and who ran the promotion. NULL for
+    #: a rationale written on the POA&M itself; writing one there clears it.
+    acceptance_rationale_provenance: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
@@ -1033,6 +1050,20 @@ class Risk(Base):
         Enum("open", "mitigated", "accepted", "closed", name="risk_status", schema="ccf"),
         default="open",
     )
+    # Five-point likelihood and impact (0099). The three-level enums above
+    # remain for compatibility and are kept in step: 1-2 low, 3 moderate,
+    # 4-5 high. Existing rows were backfilled 1/3/5, the values compute_scores
+    # already used for low/moderate/high, so no score changed.
+    likelihood_score: Mapped[int | None] = mapped_column(Integer)
+    impact_score: Mapped[int | None] = mapped_column(Integer)
+    # Owning organization (0100). A risk on a system inherits the system's
+    # organization (a trigger fills it); an enterprise risk has no system and
+    # is owned directly -- before 0100 such a risk belonged to no tenant.
+    organization_id: Mapped[int | None] = mapped_column(
+        ForeignKey("ccf.organizations.id", ondelete="CASCADE"), index=True
+    )
+    #: enterprise|cyber (0100). Backfilled: no system -> enterprise, else cyber.
+    register: Mapped[str] = mapped_column(String(16), default="cyber")
     # Quantitative scoring (likelihood x impact on a 1-5 scale, 1-25 exposure).
     inherent_score: Mapped[int | None] = mapped_column(Integer)
     residual_score: Mapped[int | None] = mapped_column(Integer)
@@ -1471,10 +1502,91 @@ class Notification(Base):
     entity_type: Mapped[str | None] = mapped_column(String(32))
     entity_id: Mapped[str | None] = mapped_column(String(64))
     dedupe_key: Mapped[str | None] = mapped_column(String(200), unique=True)
+    #: Read state for the SYSTEM principal (auth disabled) only. Users' read
+    #: state is per user, in ``NotificationRead`` -- this column on a broadcast
+    #: row let one member mark every member's alert read.
     read_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), index=True
     )
+
+
+class NotificationRead(Base):
+    """That one user has read one notification (migration 0096)."""
+
+    __tablename__ = "notification_reads"
+    __table_args__ = (
+        UniqueConstraint("notification_id", "user_id", name="uq_notification_read_user"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    organization_id: Mapped[int | None] = mapped_column(
+        ForeignKey("ccf.organizations.id", ondelete="CASCADE"), index=True
+    )
+    notification_id: Mapped[int] = mapped_column(
+        ForeignKey("ccf.notifications.id", ondelete="CASCADE")
+    )
+    user_id: Mapped[int] = mapped_column(ForeignKey("ccf.users.id", ondelete="CASCADE"), index=True)
+    read_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class OrgNotifyChannel(Base):
+    """An organization's own Slack/Teams alert channel (migration 0119).
+
+    ``encrypted_url`` is sealed with ``ccf.ai.cipher.AAD_NOTIFY_CHANNEL``: the
+    URL is the credential (anyone holding it can post), so it is never
+    returned, logged or shown -- only ``url_hint``. Managed through
+    :mod:`ccf.governance.org_channel`.
+    """
+
+    __tablename__ = "org_notify_channels"
+    __table_args__ = (
+        UniqueConstraint("organization_id", name="uq_org_notify_channels_org"),
+        CheckConstraint(
+            "min_severity IN ('info', 'warning', 'critical')",
+            name="ck_org_notify_channels_min_severity",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    organization_id: Mapped[int] = mapped_column(
+        ForeignKey("ccf.organizations.id", ondelete="CASCADE")
+    )
+    encrypted_url: Mapped[str] = mapped_column(Text)
+    url_hint: Mapped[str] = mapped_column(String(160))
+    min_severity: Mapped[str] = mapped_column(
+        String(16), default="critical", server_default="critical"
+    )
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True, server_default=text("true"))
+    created_by: Mapped[str | None] = mapped_column(String(255))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_by: Mapped[str | None] = mapped_column(String(255))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    def __repr__(self) -> str:  # never the ciphertext, never anything but the hint
+        return f"<OrgNotifyChannel org={self.organization_id} {self.url_hint}>"
+
+
+class OpsNotifyThread(Base):
+    """The operator's Slack thread for one organization in one channel (0120).
+
+    Platform-only: ``ccf_app`` (every tenant session) has no privilege on the
+    table and RLS admits only an unscoped session. Written by the
+    ``notify_delivery`` consumer through :mod:`ccf.governance.ops_threads`.
+    """
+
+    __tablename__ = "ops_notify_threads"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "channel", name="uq_ops_notify_threads_org_channel"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    organization_id: Mapped[int] = mapped_column(
+        ForeignKey("ccf.organizations.id", ondelete="CASCADE")
+    )
+    channel: Mapped[str] = mapped_column(String(128))
+    thread_ts: Mapped[str] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
 class Event(Base):
@@ -1562,9 +1674,21 @@ class Policy(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
+    #: The library template this policy was created from (``ccf.policies.library``).
+    template_key: Mapped[str | None] = mapped_column(String(64))
+    #: The organization-defined values its template's ``{{parameters}}`` render with.
+    parameters: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, default=dict, server_default="{}"
+    )
+    #: The version that is in force -- set only by an approved activation.
+    active_version_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("ccf.policy_versions.id", ondelete="SET NULL", use_alter=True)
+    )
 
     versions: Mapped[list[PolicyVersion]] = relationship(
-        back_populates="policy", cascade="all, delete-orphan"
+        back_populates="policy",
+        cascade="all, delete-orphan",
+        foreign_keys="PolicyVersion.policy_id",
     )
 
     __table_args__ = (UniqueConstraint("organization_id", "name", name="uq_policy_org_name"),)
@@ -1582,8 +1706,18 @@ class PolicyVersion(Base):
     uri: Mapped[str | None] = mapped_column(String(1024))
     effective_on: Mapped[date | None] = mapped_column(Date)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    created_by: Mapped[str | None] = mapped_column(String(255))
+    #: SHA-256 of ``body`` -- what an approval and an authorization package refer to.
+    body_sha256: Mapped[str | None] = mapped_column(String(64))
+    #: Template parameters still unset when this version was rendered. A version
+    #: with any cannot be activated: it would put "[ORGANIZATION-DEFINED: x]" in force.
+    unresolved_parameters: Mapped[list[Any]] = mapped_column(
+        JSONB, default=list, server_default="[]"
+    )
 
-    policy: Mapped[Policy] = relationship(back_populates="versions")
+    policy: Mapped[Policy] = relationship(
+        back_populates="versions", foreign_keys="PolicyVersion.policy_id"
+    )
     attestations: Mapped[list[PolicyAttestation]] = relationship(
         back_populates="policy_version", cascade="all, delete-orphan"
     )
@@ -1664,6 +1798,9 @@ class Approval(Base):
     reviewed_by: Mapped[str | None] = mapped_column(String(255))
     reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     decision_note: Mapped[str | None] = mapped_column(Text)
+    #: The decision this approval authorizes (``approvals.PURPOSES``), set at
+    #: submission; NULL for entity types with a single decision.
+    purpose: Mapped[str | None] = mapped_column(String(32))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
@@ -1754,8 +1891,11 @@ class ScanIngestion(Base):
 class KSI(Base):
     """A FedRAMP 20x Key Security Indicator (reference catalog, org-agnostic).
 
-    Seeded from ``data/fedramp_20x_ksi_catalog.json`` via ``ccf.fedramp20x.catalog``.
-    ``rule`` is the machine-readable validation spec the validation engine evaluates.
+    Seeded from FedRAMP's Consolidated Rules dataset via ``ccf.fedramp20x.catalog``.
+    ``rule`` is the machine-readable validation spec the validation engine evaluates;
+    it is Concord-authored (``rules_data/ksi_rules.json``), everything else is FedRAMP's.
+    A row the dataset no longer defines is retired (``retired_at``), never deleted --
+    tenant history cascades from it. Read through ``catalog.current_ksis``.
     """
 
     __tablename__ = "ksis"
@@ -1777,6 +1917,16 @@ class KSI(Base):
     rule: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
     sort_order: Mapped[int] = mapped_column(Integer, default=0)
     source: Mapped[str | None] = mapped_column(String(255))
+    # FedRAMP's varies_by_class statements, verbatim: class key ("b", "c") -> statement.
+    statement_by_class: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, default=dict, server_default=text("'{}'::jsonb")
+    )
+    retired_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    # Concord-curated automated methods: [{"check": posture key, "rationale": str}].
+    # Evidence for the KSI, never its verdict (see ccf.fedramp20x.methods).
+    methods: Mapped[list[Any]] = mapped_column(
+        JSONB, default=list, server_default=text("'[]'::jsonb")
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
@@ -1912,6 +2062,33 @@ class KSIException(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
+class MarketplaceProduct(Base):
+    """A FedRAMP Marketplace product -- global reference data refreshed from
+    FedRAMP's published ``data.json``. Delisted, never deleted."""
+
+    __tablename__ = "marketplace_products"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    fedramp_id: Mapped[str] = mapped_column(String(32), unique=True)
+    csp: Mapped[str] = mapped_column(String(512))
+    cso: Mapped[str] = mapped_column(String(512), index=True)
+    status: Mapped[str] = mapped_column(String(64))
+    impact_level: Mapped[str | None] = mapped_column(String(32))
+    auth_type: Mapped[str | None] = mapped_column(String(32))
+    auth_date: Mapped[date | None] = mapped_column(Date)
+    independent_assessor: Mapped[str | None] = mapped_column(String(512))
+    service_model: Mapped[list[Any]] = mapped_column(
+        JSONB, default=list, server_default=text("'[]'::jsonb")
+    )
+    deployment_model: Mapped[str | None] = mapped_column(String(64))
+    leveraged_systems: Mapped[list[Any]] = mapped_column(
+        JSONB, default=list, server_default=text("'[]'::jsonb")
+    )
+    source_commit: Mapped[str | None] = mapped_column(String(64))
+    refreshed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    delisted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
 class FedRAMPDependency(Base):
     """A FedRAMP-authorized (or not) underlying service the CSO depends on."""
 
@@ -1927,6 +2104,10 @@ class FedRAMPDependency(Base):
     # authorized|in_process|not_authorized|unknown
     fedramp_status: Mapped[str] = mapped_column(String(32), default="unknown")
     marketplace_url: Mapped[str | None] = mapped_column(String(1024))
+    #: FedRAMP Marketplace ID (``F1607067912``) this dependency is linked to,
+    #: set by a person. ``ccf.fedramp20x.marketplace`` compares the linked
+    #: record with the values recorded here; it never rewrites them.
+    marketplace_id: Mapped[str | None] = mapped_column(String(32), index=True)
     authorization_level: Mapped[str | None] = mapped_column(String(32))  # jab|agency|li-saas
     impact_level: Mapped[str | None] = mapped_column(String(16))  # low|moderate|high
     boundary_role: Mapped[str | None] = mapped_column(String(255))
@@ -2011,23 +2192,35 @@ class CatalogIntegrityReport(Base):
 # suppression comment is exactly what ``ruff --fix`` strips, which silently
 # reintroduced this bug once already; a real reference cannot be stripped.
 from . import (  # noqa: E402
+    models_ato,
+    models_boundary,
     models_capability,
     models_cci,
     models_cr26,
     models_enforcement,
     models_grc,
+    models_outbox,
     models_patching,
+    models_program,
+    models_tprm,
+    models_vdr,
     models_waivers,
 )
 
 #: Sibling model modules whose tables must be in ``Base.metadata``.
 CROSS_MODULE_MODEL_MODULES = (
+    models_ato,
+    models_boundary,
     models_capability,
     models_cci,
     models_cr26,
     models_enforcement,
     models_grc,
+    models_outbox,
     models_patching,
+    models_program,
+    models_tprm,
+    models_vdr,
     models_waivers,
 )
 

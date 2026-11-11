@@ -48,6 +48,7 @@ from ccf.evidence import service as ev_service
 from ccf.models import Organization, System, User
 from ccf.models_evidence import EvidenceObject
 from ccf.models_portal import ExternalAccessGrant, ExternalPrincipal
+from tests.portal_retention import portal_log_retention_suspended
 
 pytestmark = pytest.mark.usefixtures("fresh_engine")
 
@@ -131,7 +132,8 @@ async def _cleanup(*org_ids: int) -> None:
         await s.execute(delete(EvidenceObject).where(EvidenceObject.organization_id.in_(org_ids)))
         await s.execute(delete(System).where(System.organization_id.in_(org_ids)))
         await s.execute(delete(User).where(User.organization_id.in_(org_ids)))
-        await s.execute(delete(Organization).where(Organization.id.in_(org_ids)))
+        async with portal_log_retention_suspended(s):
+            await s.execute(delete(Organization).where(Organization.id.in_(org_ids)))
 
 
 async def _systems_named(name: str) -> list[int]:

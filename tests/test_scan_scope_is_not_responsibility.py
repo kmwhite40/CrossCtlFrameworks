@@ -246,7 +246,11 @@ async def test_readiness_itself_reports_the_new_scope_not_the_old_one() -> None:
         "aws.iam.access_key_rotation",
         "aws.iam.password_policy",
         "aws.iam.root_mfa_enabled",
+        "aws.iam.user_mfa_enabled",
         "aws.inspector.enabled",
+        # SA, overridden for the two DoD impact-level checks (partition, scope).
+        "aws.partition.govcloud_for_impact_level",
+        "aws.services.dod_srg_scope",
     }, f"unexpected set of override-scanned checks: {sorted(with_reason)}"
 
 

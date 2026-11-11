@@ -27,14 +27,16 @@ instead of silently admitting a second one.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any
 
 from sqlalchemy import (
     BigInteger,
     Boolean,
+    Date,
     DateTime,
     ForeignKey,
+    Integer,
     String,
     Text,
     UniqueConstraint,
@@ -101,6 +103,14 @@ class Cr26Document(Base):
     validation_errors: Mapped[list[Any]] = mapped_column(JSONB, nullable=False, default=list)
 
     updated_by: Mapped[str | None] = mapped_column(String(255))
+    #: Who wrote each acceptance rationale in an AVI, keyed on the entry's
+    #: ``providerTrackingId``: ``{"by": principal, "at": iso}``. Kept beside
+    #: the document, never in it (the document must stay schema-valid), and
+    #: written only by :func:`ccf.cr26.store.put_document`, never from a body.
+    #: A rationale written before migration 0118 has no entry: unknown.
+    rationale_authors: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default="{}"
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
@@ -127,3 +137,75 @@ _document_key_type = Cr26Document.__table__.c.document_key.type
 assert isinstance(_document_key_type, String), "Cr26Document.document_key must be a String"
 assert _document_key_type.length is not None, "Cr26Document.document_key must declare a length"
 DOCUMENT_KEY_MAX_LENGTH: int = _document_key_type.length
+
+
+
+class CertificationSnapshot(Base):
+    """The certification data as it stood when a valid OCR was filed (0111,
+    CDS-CSO-HAD). Append-only: a trigger refuses UPDATE, DELETE, TRUNCATE."""
+
+    __tablename__ = "certification_snapshots"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    organization_id: Mapped[int] = mapped_column(
+        ForeignKey("ccf.organizations.id", ondelete="CASCADE"), index=True
+    )
+    system_id: Mapped[int] = mapped_column(
+        ForeignKey("ccf.systems.id", ondelete="CASCADE"), index=True
+    )
+    ocr_period_from: Mapped[date | None] = mapped_column(Date)
+    ocr_period_to: Mapped[date | None] = mapped_column(Date)
+    ocr_sha256: Mapped[str] = mapped_column(String(64))
+    #: Over the sorted (kind, key, sha256) of what this snapshot holds: the
+    #: identity a re-filing of identical content dedupes on.
+    content_sha256: Mapped[str] = mapped_column(String(64))
+    #: ``ocr_filed`` (taken as the OCR was stored) or ``backfill`` (taken by
+    #: migration 0111 from the documents then current).
+    basis: Mapped[str] = mapped_column(String(16))
+    #: Who and when first took it; each later filing of the same content is a
+    #: ``CertificationSnapshotFiling``.
+    taken_by: Mapped[str | None] = mapped_column(String(255))
+    taken_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    #: ``[{kind, document_key}]`` invalid at the time, so not in the snapshot.
+    withheld_invalid: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, default=list)
+
+
+class CertificationSnapshotDocument(Base):
+    """One deliverable inside a snapshot, as it stood. Carries the same fields
+    the portal's renderers read from a live ``Cr26Document``."""
+
+    __tablename__ = "certification_snapshot_documents"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    snapshot_id: Mapped[int] = mapped_column(
+        ForeignKey("ccf.certification_snapshots.id", ondelete="CASCADE"), index=True
+    )
+    organization_id: Mapped[int] = mapped_column(
+        ForeignKey("ccf.organizations.id", ondelete="CASCADE"), index=True
+    )
+    system_id: Mapped[int] = mapped_column(Integer)
+    kind: Mapped[str] = mapped_column(String(32))
+    document_key: Mapped[str | None] = mapped_column(String(255))
+    document: Mapped[dict[str, Any]] = mapped_column(JSONB)
+    sha256: Mapped[str] = mapped_column(String(64))
+    ruleset_version: Mapped[str | None] = mapped_column(String(64))
+    schema_version: Mapped[str | None] = mapped_column(String(64))
+    #: When the source document was last written -- not when it was copied.
+    updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class CertificationSnapshotFiling(Base):
+    """One valid OCR stored, and the snapshot it filed (0111). The most recent
+    filing in a report period says which snapshot is current for it."""
+
+    __tablename__ = "certification_snapshot_filings"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    snapshot_id: Mapped[int] = mapped_column(
+        ForeignKey("ccf.certification_snapshots.id", ondelete="CASCADE"), index=True
+    )
+    organization_id: Mapped[int] = mapped_column(
+        ForeignKey("ccf.organizations.id", ondelete="CASCADE"), index=True
+    )
+    filed_by: Mapped[str | None] = mapped_column(String(255))
+    filed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

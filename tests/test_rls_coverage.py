@@ -102,6 +102,11 @@ EXPECTED_TENANT_ISOLATION_TABLES: frozenset[str] = frozenset(
         "capabilities", "capability_components", "capability_controls",
         "capability_ksis", "capability_risks",
         "capture_snapshots",
+        # 0110 agency self-service requests (CDS-TRC-SSM/-UTC-AAD).
+        "certification_access_requests", "certification_request_links",
+        # 0111 OCR-aligned snapshots (CDS-CSO-HAD).
+        "certification_snapshot_documents", "certification_snapshot_filings",
+        "certification_snapshots",
         "compliance_pack_versions",
         "compliance_packs", "connector_configs", "control_implementations",
         "control_test_results",
@@ -121,6 +126,11 @@ EXPECTED_TENANT_ISOLATION_TABLES: frozenset[str] = frozenset(
         "identity_providers", "information_types", "interconnections", "inventory_items",
         "ksi_assessor_reviews", "ksi_exceptions", "ksi_states",
         "ksi_validation_results", "monitoring_runs", "notifications", "organizations",
+        # 0096 per-user read state -- one member's "read all" must not touch
+        # another's inbox, and never another tenant's.
+        "notification_reads",
+        # 0119 an organization's own alert channel (its URL is a credential).
+        "org_notify_channels",
         "pack_controls", "pack_evidence_requirements", "pack_install_runs", "pack_mappings",
         "pack_rules", "pack_test_results", "people", "poam_milestones", "poams", "policies",
         "policy_attestations", "policy_versions", "prep_classifications", "prep_embeddings",
@@ -142,6 +152,27 @@ EXPECTED_TENANT_ISOLATION_TABLES: frozenset[str] = frozenset(
         # 0070 waivers -- tenant-owned with its own organization_id, so
         # policied directly rather than through a parent chain.
         "waivers", "webhooks",
+        # 0099 GRC program build-out: every table carries its own
+        # organization_id (children included), policied directly.
+        "audit_workpapers", "business_units", "committee_meetings", "committee_members",
+        "committees", "compensating_controls", "compliance_obligations",
+        "contract_obligations", "due_diligence_items", "key_risk_indicators",
+        "kri_readings", "objective_links", "posture_snapshots", "project_links",
+        "projects", "risk_appetites", "strategic_objectives", "team_members", "teams",
+        "vendor_contracts", "vendor_findings",
+        # 0100 risk program: assessments and treatment, organization-owned.
+        "risk_assessments", "risk_treatment_actions", "risk_treatment_plans",
+        # 0103 ATO workspace -- who signs for a system, a package's workflow
+        # history, and POA&M extension requests; each carries organization_id.
+        "system_role_assignments", "authorization_package_events", "poam_extensions",
+        # 0105 SSP inventories -- ports/protocols/services and crypto modules.
+        "ports_protocols_services", "crypto_modules",
+        # 0107 VDR -- vulnerability evaluations, organization-owned.
+        "vulnerability_evaluations",
+        # 0115 event-bus outbox -- organization_id NULL only for platform jobs.
+        "outbox_jobs",
+        # 0121 a vendor's FedRAMP certification package (agency-side crosswalk).
+        "vendor_cert_documents",
     }
 )
 
@@ -185,7 +216,8 @@ async def test_rls_policy_structural_guard() -> None:
         f"tables with tenant_isolation not in the expected snapshot: {sorted(unexpected)} — "
         "update EXPECTED_TENANT_ISOLATION_TABLES for the new coverage"
     )
-    assert len(found) == len(EXPECTED_TENANT_ISOLATION_TABLES) == 142
+    # 179 through 0118, + 1 (0119 org_notify_channels), + 1 (0121 vendor_cert_documents)
+    assert len(found) == len(EXPECTED_TENANT_ISOLATION_TABLES) == 181
 
     for relname, rowsecurity, forcerowsecurity in rows:
         assert rowsecurity is True, f"ccf.{relname}: ROW LEVEL SECURITY is not ENABLED"

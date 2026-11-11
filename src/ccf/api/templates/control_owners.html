@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% block title %}Control Owners · Concord{% endblock %}
+{% block heading %}Control owners{% endblock %}
+{% block subtitle %}Who owns each control implementation across your live systems, and where nobody does.{% endblock %}
+{% block content %}
+<section class="kpi-grid kpi-grid--4">
+  <div class="kpi"><span class="kpi__label">Implementations</span><span class="kpi__value">{{ total }}</span></div>
+  <div class="kpi"><span class="kpi__label">Owners</span><span class="kpi__value">{{ owners | selectattr('id') | list | length }}</span></div>
+  <div class="kpi"><span class="kpi__label">Without an owner</span><span class="kpi__value {% if unowned %}kpi__value--danger{% endif %}">{{ unowned }}</span><span class="kpi__meta">{{ '%d%%'|format(100 * unowned / total) if total else '—' }} of implementations</span></div>
+</section>
+{% if owners %}
+<div class="table-wrap"><table>
+  <thead><tr><th>Owner</th><th>Total</th>{% for s in statuses %}<th>{{ s | replace('_',' ') }}</th>{% endfor %}</tr></thead>
+  <tbody>{% for o in owners %}<tr>
+    <td>{% if o.id is none %}<span class="chip chip--warn">Unowned</span>{% else %}<strong>{{ o.name }}</strong>{% endif %}</td>
+    <td>{{ o.total }}</td>{% for s in statuses %}<td>{{ o.counts.get(s, 0) or '' }}</td>{% endfor %}
+  </tr>{% endfor %}</tbody></table></div>
+{% else %}
+<div class="card empty-state"><i data-lucide="users"></i><h2>No control implementations</h2><p>No implementation is recorded on this organization's live systems yet. Implementations are created from a system's SSP or by the derivation that runs after a scan.</p></div>
+{% endif %}
+{% endblock %}

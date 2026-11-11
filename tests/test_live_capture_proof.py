@@ -7,7 +7,8 @@ ships one. It then read that fact from four self-reported status columns of
 four columns with no credentials at all: ``POST /connector-configs`` creates a
 row, ``POST /connector-configs/{id}/sync`` is a mock that sets ``status``,
 ``last_sync``, ``objects_discovered`` and ``error_message``. Both are gated on
-``get_principal`` only, so **two API calls from a viewer** manufactured an
+``get_principal`` only, so **two API calls from a viewer** (today a
+control_owner -- the auth gate now refuses a viewer any write) manufactured an
 "evidenced by automated capture" claim in a document filed with a federal
 regulator.
 
@@ -21,6 +22,7 @@ predicate, which would only prove the mock works.
 from __future__ import annotations
 
 import itertools
+import json
 import os
 from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager
@@ -32,6 +34,7 @@ from alembic.config import Config
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import delete, select
 
+from ccf.ai.cipher import build_cipher
 from ccf.api.main import create_app
 from ccf.auth import hash_password, new_api_token
 from ccf.config import get_settings
@@ -151,7 +154,7 @@ class _Tenant:
 
 @asynccontextmanager
 async def _tenant(
-    name: str, prefix: str, cloud_platform: str, *, role: str = "viewer"
+    name: str, prefix: str, cloud_platform: str, *, role: str = "control_owner"
 ) -> AsyncIterator[_Tenant]:
     """One org + a role-bearing user + a system with a declared cloud platform.
 
@@ -252,7 +255,8 @@ def _texts(entries: list[SSPControlEntry]) -> dict[str, str]:
 async def test_two_api_calls_and_no_credentials_do_not_evidence_anything() -> None:
     """The whole change in one test.
 
-    A ``viewer`` -- the least-privileged authenticated role -- creates a
+    A ``control_owner`` -- the least-privileged role that may still write --
+    creates a
     connector with no credential and calls the mock sync. Those two calls write
     exactly the four columns the backing ladder reads, and nothing else: no
     ``CaptureSnapshot`` exists, so nothing has actually been captured. The SSP
@@ -608,17 +612,24 @@ async def test_an_access_key_pair_for_the_same_org_is_live_tenant_capture() -> N
 @pytest.mark.usefixtures("_credential_storage")
 async def test_an_access_key_pair_wins_when_a_profile_is_also_present() -> None:
     """``AwsGovCloudConnector._session`` prefers the key pair when both are on
-    the bundle, so the identity that actually captured is the tenant's."""
+    the bundle, so the identity that actually captured is the tenant's.
+
+    ``set_credential`` now refuses a bundle naming two methods, so no new one
+    can be stored -- but one stored before that rule can still be on a row,
+    so the bundle is written here directly, the way such a row exists.
+    """
     async with _org_with(
-        "Both Identities AWS",
-        last_sync=_now(),
-        captured_at=_now(),
-        credential={
-            "access_key_id": "AKIAEXAMPLEEXAMPLE",
-            "secret_access_key": "s3cr3t-example-key-material",
-            "profile": "concord-host",
-        },
+        "Both Identities AWS", last_sync=_now(), captured_at=_now(),
     ) as org_id:
+        async with session_scope() as session:
+            cfg = (await session.execute(select(ConnectorConfig).where(
+                ConnectorConfig.organization_id == org_id))).scalar_one()
+            cipher = build_cipher(get_settings())
+            cfg.encrypted_credential = cipher.encrypt(json.dumps({
+                "access_key_id": "AKIAEXAMPLEEXAMPLE",
+                "secret_access_key": "s3cr3t-example-key-material",
+                "profile": "concord-host",
+            }, sort_keys=True))
         assert await _is_live(org_id) is True
 
 

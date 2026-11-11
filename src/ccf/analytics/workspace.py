@@ -210,17 +210,17 @@ async def customer_workspace(session: AsyncSession, org_id: int | None) -> dict[
                 f"{open_tasks} open remediation task(s)"
                 + (f", {accepted} risk-accepted." if accepted else ".")
             ),
-            "Work the gaps", "/dashboard"))
+            "Work the gaps", "/gaps"))
     elif accepted:
         steps.append(_step(
             "remediate", "Correct and remediate", "done",
             f"Nothing outstanding — {accepted} finding(s) failing with the risk accepted.",
-            "Review acceptances", "/dashboard"))
+            "Review acceptances", "/gaps"))
     else:
         steps.append(_step(
             "remediate", "Correct and remediate", "done" if assessed else "blocked",
             "Nothing failing." if assessed else "Nothing assessed yet.",
-            "Work the gaps", "/dashboard"))
+            "Work the gaps", "/gaps"))
 
     # 6 -- document
     ssp = (

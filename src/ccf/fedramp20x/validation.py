@@ -39,6 +39,8 @@ from ..models import (
 )
 from ..models_grc import ControlTest
 from ..posture.evidence import non_passing_attribution, pass_attribution
+from . import methods as ksi_methods
+from .catalog import current_ksis
 
 # Best-to-worst ranking used to pick the winning verdict of an ``any_of`` rule.
 # Public because ccf.posture.rollup shares it -- but note the two uses select
@@ -415,9 +417,13 @@ async def validate_system(
 ) -> list[dict[str, Any]]:
     """Validate every KSI for a system; record history + state. Returns result dicts."""
     if ksis is None:
-        ksis = list((await session.execute(select(KSI).order_by(KSI.sort_order))).scalars().all())
+        ksis = list((await session.execute(current_ksis())).scalars().all())
+    else:
+        # Never record new state against an indicator FedRAMP no longer defines.
+        ksis = [k for k in ksis if k.retired_at is None]
     started = time.perf_counter()
     ctx = await build_context(session, system_id)
+    check_status = await ksi_methods.tier0_check_status(session, system_id)
     now = datetime.now(UTC)
 
     existing_states = {
@@ -432,6 +438,8 @@ async def validate_system(
         verdict = evaluate_rule(
             ksi.rule or {}, ctx, ksi={"identifier": ksi.identifier, "category": ksi.category}
         )
+        # Curated posture checks can lower the verdict, never raise it to pass.
+        verdict = ksi_methods.apply(verdict, list(ksi.methods or []), check_status)
         session.add(
             KSIValidationResult(
                 system_id=system_id,

@@ -4,3 +4,20 @@ Copyright © 2026 Colleen Townsend. All rights reserved.
 This product includes software developed by third parties. The names of
 those projects and their licenses are recorded in the generated Software
 Bill of Materials (sbom.json) produced at build time.
+
+---------------------------------------------------------------------------
+Crosswalk 20x (ccf/fedramp20x/crosswalk.py)
+
+Portions of ccf/fedramp20x/crosswalk.py are a Python port of the crosswalk
+and vulnerability-register logic in Crosswalk 20x
+(https://github.com/Mycroft-io/crosswalk-rev5-to-20x, v1.0.0, commit f2a6ebb),
+Copyright 2026 Mycroft Technologies Inc., licensed under the Apache License,
+Version 2.0 (https://www.apache.org/licenses/LICENSE-2.0). The port changes
+the coverage states (a "Partly reported" state is added and "Traced" is
+narrowed) and the register merge (observations are ordered by document date).
+
+FedRAMP data bundled with this product is public domain (US government work;
+CC0 1.0 worldwide): the Consolidated Rules for 2026 (ccf/fedramp20x/rules_data),
+the CR26 JSON schemas (ccf/cr26/schemas), FedRAMP's agency control guidance
+(ccf/fedramp20x/guidance_data, from FedRAMP/JSONViewer) and FedRAMP's sample
+certification package used as a test fixture (tests/fixtures/cr26_sample).

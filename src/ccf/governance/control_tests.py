@@ -327,7 +327,11 @@ async def _capture_identity_is_tenants_own(
     if credential is None:
         return True
     # The same distinction ``AwsGovCloudConnector.is_configured`` draws: an
-    # access key pair is the tenant's, a bare profile is the host's.
+    # access key pair is the tenant's, a bare profile is the host's. A role in
+    # the tenant's account, assumed with the tenant's External ID, is the
+    # tenant's too, and falls through to the last line: the broker profile
+    # that assumes it is never stored in the tenant's bundle, and a bundle
+    # holds one method only (``credentials._prepare_aws_bundle``).
     if credential.get("access_key_id") and credential.get("secret_access_key"):
         return True
     return not credential.get("profile")
@@ -557,6 +561,11 @@ async def ensure_poam_for_control_test(
         )
     ).scalar_one_or_none()
     if existing is not None:
+        # The fields this refresh writes, before and after: a refresh that
+        # changes nothing is not an event (ruling R26). A failing test re-runs
+        # on every scheduled and connector pass, and an emit each time would
+        # post a webhook and queue a graph rebuild and a VER re-seed per run.
+        before = (existing.weakness, existing.remediation_plan, existing.remediation_plan_source)
         existing.weakness = weakness
         # Refresh only a plan this module wrote. The observed condition and the
         # failing-resource counts move between scans, so a generated plan has to
@@ -573,6 +582,19 @@ async def ensure_poam_for_control_test(
             # the next scan may keep it current.
             existing.remediation_plan = guidance
             existing.remediation_plan_source = GENERATED_PLAN
+        after = (existing.weakness, existing.remediation_plan, existing.remediation_plan_source)
+        if after == before:
+            return existing, False
+        await bus.emit(
+            session,
+            verb="updated",
+            entity_type="poam",
+            entity_id=existing.id,
+            summary=f"POA&M refreshed from control test: {existing.title}",
+            org_id=await bus.system_org(session, test.system_id),
+            actor="control-test",
+            payload={"system_id": test.system_id},
+        )
         return existing, False
 
     control_id = (
@@ -601,6 +623,19 @@ async def ensure_poam_for_control_test(
         )
     )
     session.add(poam)
+    await session.flush()
+    # Here and not only in the caller: two routes open this POA&M on request
+    # (api/routes/posture.py, api/routes/ui.py) and emit nothing of their own.
+    await bus.emit(
+        session,
+        verb="created",
+        entity_type="poam",
+        entity_id=poam.id,
+        summary=f"POA&M opened from control test: {poam.title}",
+        org_id=await bus.system_org(session, test.system_id),
+        actor="control-test",
+        payload={"system_id": test.system_id},
+    )
     return poam, True
 
 
@@ -690,6 +725,31 @@ async def _resolve_on_recovery(
             control_test_id=test.id,
             error=str(exc)[:200],
         )
+
+
+async def emit_control_test_created(
+    session: AsyncSession, test: ControlTest, *, actor: str | None
+) -> None:
+    """A new test is a new node in the assurance graph, before any result.
+
+    Every writer that creates a :class:`ControlTest` outside a scan calls this
+    (a scan's tests reach the graph through :func:`record_result`'s
+    ``control_test tested``). The event takes the test's organization, else its
+    system's: never the caller's, which is None for a global principal.
+    """
+    org_id = test.organization_id
+    if org_id is None:
+        org_id = await bus.system_org(session, test.system_id)
+    await bus.emit(
+        session,
+        verb="created",
+        entity_type="control_test",
+        entity_id=test.id,
+        summary=f"Control test '{test.name}' added for {test.control_id}",
+        org_id=org_id,
+        actor=actor,
+        payload={"system_id": test.system_id} if test.system_id is not None else {},
+    )
 
 
 async def record_result(
@@ -877,6 +937,7 @@ async def record_result(
         summary=f"Control test {status}: {test.control_id}",
         org_id=test.organization_id,
         actor=actor,
+        payload={"system_id": test.system_id},
     )
     return res
 

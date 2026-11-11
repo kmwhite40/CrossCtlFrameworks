@@ -1,0 +1,86 @@
+{% extends "base.html" %}
+{% block title %}Contracts · Concord{% endblock %}
+{% block heading %}Vendor contracts{% endblock %}
+{% block subtitle %}Contracts per vendor with their dates, value, owner and status; obligations each contract places on the vendor, renewals inside {{ window }} days and obligations missed or overdue.{% endblock %}
+{% block actions %}<a class="btn btn--secondary" href="/vendors"><i data-lucide="building-2"></i>Vendors</a>{% endblock %}
+{% block content %}
+<section class="kpi-grid kpi-grid--4">
+  <div class="kpi"><span class="kpi__label">Active contracts</span><span class="kpi__value">{{ active_count }}</span><span class="kpi__foot">of {{ contracts|length }} recorded</span></div>
+  <div class="kpi"><span class="kpi__label">Renewal within {{ window }} days</span><span class="kpi__value">{{ renewals|length }}</span><span class="kpi__foot">active contracts; renewal date, else end date</span></div>
+  <div class="kpi"><span class="kpi__label">Obligations missed or overdue</span><span class="kpi__value">{{ attention|length }}</span><span class="kpi__foot">missed as recorded, or still pending past due</span></div>
+  <div class="kpi"><span class="kpi__label">Annual value, active</span><span class="kpi__value">{% if annual_value is not none %}{{ '{:,.0f}'.format(annual_value) }}{% else %}—{% endif %}</span><span class="kpi__foot">{{ valued_count }} of {{ active_count }} active contracts have a value recorded</span></div>
+</section>
+
+{% if renewals %}
+<section class="panel" id="renewals">
+  <div class="panel__head"><h2 class="panel__title">Renewals due</h2><span class="panel__hint">Active contracts whose renewal (or end) date is within {{ window }} days or already past</span></div>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Contract</th><th>Vendor</th><th>Decision by</th><th>Owner</th></tr></thead>
+    <tbody>{% for c in renewals %}{% set when = renewal_date(c) %}<tr>
+      <td><a href="/contracts/{{ c.id }}">{{ c.title }}</a></td>
+      <td>{{ vendor_names.get(c.vendor_id, '—') }}</td>
+      <td><span class="{% if when < today %}kanban__due--late{% endif %}">{{ when }}</span>{% if when < today %} <span class="chip chip--err">passed</span>{% endif %}</td>
+      <td>{{ owners.get(c.owner_user_id, '—') }}</td>
+    </tr>{% endfor %}</tbody>
+  </table></div>
+</section>
+{% endif %}
+
+{% if attention %}
+<section class="panel" id="missed-obligations">
+  <div class="panel__head"><h2 class="panel__title">Missed and overdue obligations</h2><span class="panel__hint">"Overdue" is pending past its due date; nobody has recorded it as missed</span></div>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Obligation</th><th>Contract</th><th>Category</th><th>Due</th><th>State</th></tr></thead>
+    <tbody>{% for a in attention %}<tr>
+      <td>{{ a.ob.description }}</td>
+      <td><a href="/contracts/{{ a.contract.id }}">{{ a.contract.title }}</a></td>
+      <td>{{ a.ob.category | replace('_', ' ') }}</td>
+      <td>{{ a.ob.due_on or '—' }}</td>
+      <td><span class="chip chip--err">{{ a.state }}</span></td>
+    </tr>{% endfor %}</tbody>
+  </table></div>
+</section>
+{% endif %}
+
+<section class="card">
+  <div class="card__header"><div class="card__title">Contracts</div><span class="dim">{{ contracts|length }}</span></div>
+  {% if contracts %}
+  <div class="table-wrap"><table>
+    <thead><tr><th>Contract</th><th>Vendor</th><th>Start</th><th>End</th><th>Renewal</th><th>Annual value</th><th>Owner</th><th>Status</th><th>Obligations</th></tr></thead>
+    <tbody>{% for c in contracts %}{% set oc = by_contract.get(c.id, {}) %}<tr id="contract-{{ c.id }}">
+      <td><a href="/contracts/{{ c.id }}"><strong>{{ c.title }}</strong></a>{% if c.contract_ref %}<div class="dim" style="font-size:12px">{{ c.contract_ref }}</div>{% endif %}</td>
+      <td>{{ vendor_names.get(c.vendor_id, '—') }}</td>
+      <td>{{ c.start_on or '—' }}</td>
+      <td>{{ c.end_on or '—' }}</td>
+      <td>{{ c.renewal_on or '—' }}</td>
+      <td>{% if c.annual_value is not none %}{{ '{:,.0f}'.format(c.annual_value) }}{% else %}<span class="dim">—</span>{% endif %}</td>
+      <td>{{ owners.get(c.owner_user_id, '—') }}</td>
+      <td><span class="chip {% if c.status == 'active' %}chip--ok{% elif c.status == 'draft' %}chip--ghost{% else %}chip--warn{% endif %}">{{ c.status }}</span></td>
+      <td>{% if oc %}{% for state, n in oc.items() %}<span class="chip {% if state in ('missed', 'overdue') %}chip--err{% elif state == 'met' %}chip--ok{% else %}chip--ghost{% endif %}">{{ n }} {{ state }}</span> {% endfor %}{% else %}<span class="dim">none recorded</span>{% endif %}</td>
+    </tr>{% endfor %}</tbody>
+  </table></div>
+  {% else %}
+  <div class="empty-state"><i data-lucide="file-signature"></i><h2>No contracts recorded</h2><p>Record a vendor's contract below to track its renewal date and the obligations it places on the vendor.{% if not vendors %} A contract belongs to a vendor, and none exist yet: add one first (<code>POST /api/vendors</code>).{% endif %}</p></div>
+  {% endif %}
+</section>
+
+{% if can_write and vendors %}
+<section class="card card--elevated" style="margin-top:16px">
+  <div class="card__header"><div class="card__title">Record a contract</div></div>
+  <form method="post" action="/contracts" class="card__body filters">
+    <select class="select" name="vendor_id" aria-label="Vendor" required>
+      {% for v in vendors %}<option value="{{ v.id }}"{% if vendor_id == v.id %} selected{% endif %}>{{ v.name }}</option>{% endfor %}
+    </select>
+    <input class="input" name="title" required placeholder="Title" aria-label="Title">
+    <input class="input" name="contract_ref" placeholder="Reference" aria-label="Contract reference">
+    <label class="field-group"><span class="label">Start</span><input class="input" type="date" name="start_on"></label>
+    <label class="field-group"><span class="label">End</span><input class="input" type="date" name="end_on"></label>
+    <label class="field-group"><span class="label">Renewal</span><input class="input" type="date" name="renewal_on"></label>
+    <input class="input" name="annual_value" inputmode="decimal" placeholder="Annual value" aria-label="Annual value">
+    <select class="select" name="owner_user_id" aria-label="Owner"><option value="">No owner</option>{% for u in users %}<option value="{{ u.id }}">{{ u.full_name or u.email }}</option>{% endfor %}</select>
+    <select class="select" name="status" aria-label="Status">{% for s in statuses %}<option value="{{ s }}"{% if s == 'active' %} selected{% endif %}>{{ s }}</option>{% endfor %}</select>
+    <button class="btn btn--primary" type="submit"><i data-lucide="plus"></i>Record contract</button>
+  </form>
+</section>
+{% endif %}
+{% endblock %}

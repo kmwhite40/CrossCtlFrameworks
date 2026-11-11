@@ -26,8 +26,9 @@ from .etl.dedupe import apply_dedupe, plan_dedupe
 from .etl.reclassify import apply_reclassification, plan_reclassification
 from .etl.sources import poll as poll_sources
 from .etl.sources import seed_sources
+from .events import worker as event_worker
 from .governance import conmon, digest, insights, scheduler
-from .logging import configure_logging
+from .logging import configure_logging, get_logger
 from .models import (
     CatalogSource,
     Control,
@@ -49,6 +50,7 @@ from .ssp.templates_seed import seed_statement_templates
 
 app = typer.Typer(help="Concord administration & query CLI", no_args_is_help=True)
 console = Console()
+log = get_logger(__name__)
 
 
 @app.callback()
@@ -292,6 +294,43 @@ def conmon_scan() -> None:
     asyncio.run(_run())
 
 
+@app.command(name="aws-scope-refresh")
+def aws_scope_refresh(
+    from_file: str = typer.Option(
+        "", help="A saved copy of AWS's DoD CC SRG services-in-scope page. Fetched if omitted."
+    ),
+    write: bool = typer.Option(False, "--write/--dry-run", help="Rewrite the shipped data file."),
+) -> None:
+    """Refresh which AWS services AWS lists at each DoD impact level.
+
+    Re-reads AWS's own table and reports every service whose IL5 entry
+    changed. Dry run by default; ``--write`` replaces
+    ``ccf/connectors/data/aws_dod_srg_scope.json``, which the
+    ``aws.services.dod_srg_scope`` check reads.
+    """
+    import httpx  # noqa: PLC0415
+
+    from .connectors import aws_service_scope as scope  # noqa: PLC0415
+
+    if from_file:
+        page = Path(from_file).read_text(encoding="utf-8")
+    else:
+        page = httpx.get(scope.SOURCE_URL, timeout=30, follow_redirects=True).text
+    doc = scope.build_document(page, retrieved_on=datetime.now(UTC).date())
+    changes = scope.il5_changes(scope.load(), doc)
+    il5 = sum(1 for r in doc["services"] if r.get("il5_govcloud") == "authorized")
+    console.print(
+        f"{len(doc['services'])} services, {il5} authorized at IL5; page last updated "
+        f"{doc['source_last_updated']}; {len(changes)} IL5 change(s)"
+    )
+    for line in changes:
+        console.print(f"  {line}")
+    if write:
+        target = Path(scope.__file__).parent / "data" / "aws_dod_srg_scope.json"
+        target.write_text(json.dumps(doc, indent=1, ensure_ascii=False) + "\n", encoding="utf-8")
+        console.print(f"wrote {target}")
+
+
 @app.command(name="attestations-probe")
 def attestations_probe(
     system_id: int = typer.Argument(..., help="System to probe (its org's credential is used)"),
@@ -415,12 +454,8 @@ def keys_status() -> None:
     """Show the current key id and how many stored values still need rewrapping."""
 
     async def _run() -> None:
-        from .ai.cipher import (  # noqa: PLC0415
-            CredentialStorageError,
-            build_cipher,
-            token_key_id,
-        )
-        from .ai.rotation import ENCRYPTED_COLUMNS  # noqa: PLC0415
+        from .ai.cipher import CredentialStorageError, build_cipher  # noqa: PLC0415
+        from .ai.rotation import key_census  # noqa: PLC0415
 
         settings = get_settings()
         try:
@@ -433,16 +468,9 @@ def keys_status() -> None:
             raise typer.Exit(code=1) from None
         console.print(f"current key id: [bold]{current.current_key_id}[/bold]")
         async with session_scope() as session:
-            for spec in ENCRYPTED_COLUMNS:
-                rows = (await session.execute(select(spec.model))).scalars().all()
-                by_key: dict[str, int] = {}
-                for row in rows:
-                    token = getattr(row, spec.column, None)
-                    if not token:
-                        continue
-                    kid = token_key_id(token) or "v1 (no key id)"
-                    by_key[kid] = by_key.get(kid, 0) + 1
-                console.print(f"  {spec.label}: {by_key or 'no encrypted rows'}")
+            census = await key_census(session)
+        for label, by_key in census.items():
+            console.print(f"  {label}: {by_key or 'no encrypted rows'}")
 
     asyncio.run(_run())
 
@@ -477,6 +505,11 @@ def keys_rewrap() -> None:
                 f"{kid or 'unknown (pre-key-id)'} — add it to "
                 "CCF_AI_CREDENTIAL_PREVIOUS_KEYS and run again"
             )
+        for table, row_id, why in report.damaged:
+            # No key fixes these, so none is suggested.
+            console.print(
+                f"[red]damaged[/red] {table} id={row_id}: {why} — enter this secret again"
+            )
         if not report.ok:
             raise typer.Exit(code=1)
 
@@ -489,7 +522,7 @@ def notify_digest() -> None:
 
     async def _run() -> None:
         async with session_scope() as session:
-            counts = await digest.run(session, today=datetime.now(UTC).date())
+            counts = await digest.run_all(session, today=datetime.now(UTC).date())
         console.print(f"[green]Alert digest complete[/green] — {json.dumps(counts)}")
 
     asyncio.run(_run())
@@ -785,6 +818,66 @@ def assessment_worker(
 
     batch = limit if limit is not None else settings.assessment_engine_batch_size
     asyncio.run(_assessment_drain_loop(once=once, worker=worker, batch=batch, settings=settings))
+
+
+async def _event_drain_loop(
+    *,
+    once: bool,
+    worker: str,
+    batch: int,
+    settings: Settings,
+    reap_interval: float = 300.0,
+    now: Callable[[], float] = time.monotonic,
+) -> None:
+    """Outbox drain cycles until ``once``, or forever in ``--loop`` mode.
+
+    Same shape as ``_assessment_drain_loop``: stale claims are reaped on a
+    cadence inside the loop (not once at start, which could never find a stale
+    claim), and an empty cycle sleeps rather than spinning the claim query.
+    """
+    last_reap = float("-inf")  # forces a reap on the very first cycle
+    while True:
+        current = now()
+        if current - last_reap >= reap_interval:
+            reaped = await event_worker.reap()
+            if reaped:
+                console.print(f"[yellow]Reaped {reaped} stale outbox job(s)[/yellow]")
+            last_reap = current
+        stats = await event_worker.drain_once(worker=worker, limit=batch)
+        console.print_json(json.dumps(stats))
+        if once:
+            break
+        if not any(stats.values()):
+            await asyncio.sleep(settings.event_drain_interval_seconds)
+
+
+@app.command(name="event-worker")
+def event_worker_cmd(
+    once: bool = typer.Option(
+        True,
+        "--once/--loop",
+        help="Run one cycle, or loop forever (sleeping between empty cycles).",
+    ),
+    limit: int = typer.Option(10, help="Jobs to claim per cycle."),
+    worker: str = typer.Option("event-worker", help="Worker name recorded on claimed jobs."),
+) -> None:
+    """Drain the event bus's outbox (webhook deliveries and the derived views)."""
+    settings = get_settings()
+    if not settings.event_worker_enabled:
+        # Same gate as `ccf assessment-worker`: without the flag the API drains
+        # inline, and a second drainer here would only double the work.
+        console.print(
+            "[yellow]Event worker is disabled (CCF_EVENT_WORKER_ENABLED=false) — "
+            "nothing to do. Set CCF_EVENT_WORKER_ENABLED=true to enable it.[/yellow]"
+        )
+        return
+    from .governance import delivery  # noqa: PLC0415
+
+    for warning in delivery.config_warnings(settings):
+        # The event-worker is what posts, so it says so too, not just the api.
+        log.warning("config.notify_incomplete", detail=warning)
+        console.print(f"[yellow]{warning}[/yellow]")
+    asyncio.run(_event_drain_loop(once=once, worker=worker, batch=limit, settings=settings))
 
 
 @app.command(name="calibration-snapshot")
@@ -1095,15 +1188,36 @@ app.add_typer(fedramp20x_app, name="fedramp20x")
 
 @fedramp20x_app.command(name="seed-ksi")
 def fr20x_seed_ksi(
-    path: Path = typer.Option(None, "--path", help="Catalog JSON (defaults to bundled seed)"),
+    rules_dir: Path = typer.Option(
+        None, "--rules-dir", help="Vendored FedRAMP rules directory (defaults to bundled)"
+    ),
+    overlay: Path = typer.Option(
+        None, "--rules-overlay", help="Concord validation-rule overlay (defaults to bundled)"
+    ),
 ) -> None:
-    """Seed / refresh the FedRAMP 20x KSI catalog (idempotent)."""
+    """Seed / refresh the KSI catalog from FedRAMP's Consolidated Rules (idempotent).
+
+    Indicators the dataset no longer defines are retired, never deleted.
+    """
     from .fedramp20x.catalog import seed_ksis  # noqa: PLC0415
 
     async def _run() -> None:
         async with session_scope() as session:
-            result = await seed_ksis(session, path)
+            result = await seed_ksis(session, rules_dir, overlay)
         console.print(f"[green]KSI catalog seeded[/green] — {result}")
+
+    asyncio.run(_run())
+
+
+@fedramp20x_app.command(name="marketplace-refresh")
+def fr20x_marketplace_refresh() -> None:
+    """Refresh FedRAMP Marketplace reference data now (the scheduler does it daily)."""
+    from .fedramp20x.marketplace import refresh  # noqa: PLC0415
+
+    async def _run() -> None:
+        async with session_scope() as session:
+            result = await refresh(session)
+        console.print(f"Marketplace: {result}")
 
     asyncio.run(_run())
 
@@ -1135,7 +1249,8 @@ def fr20x_validate(system_id: int = typer.Option(..., "--system-id")) -> None:
     results, score = asyncio.run(_run())
     console.print(
         f"[green]Validated {len(results)} KSIs[/green] — "
-        f"readiness {score['readiness_pct']}% ({score['status']})"
+        f"readiness {score['readiness_pct'] if score['readiness_pct'] is not None else '—'}"
+        f"{'%' if score['readiness_pct'] is not None else ''} ({score['status']})"
     )
     console.print_json(json.dumps(results, default=str))
 
@@ -1181,22 +1296,11 @@ def fr20x_export(
 @fedramp20x_app.command(name="list-gaps")
 def fr20x_gaps(system_id: int = typer.Option(..., "--system-id")) -> None:
     """List KSIs that are failing, warning, or need manual/assessor review."""
-    from .models import KSI, KSIState  # noqa: PLC0415
+    from .fedramp20x.readiness import open_gaps  # noqa: PLC0415
 
-    async def _run() -> list[dict[str, object]]:
+    async def _run() -> list[dict[str, str]]:
         async with session_scope() as session:
-            rows = (
-                await session.execute(
-                    select(KSI.identifier, KSI.name, KSIState.status)
-                    .join(KSIState, KSIState.ksi_id == KSI.id)
-                    .where(
-                        KSIState.system_id == system_id,
-                        KSIState.status.in_(("fail", "warn", "manual_review_required")),
-                    )
-                    .order_by(KSI.sort_order)
-                )
-            ).all()
-            return [{"ksi": r[0], "name": r[1], "status": r[2]} for r in rows]
+            return await open_gaps(session, system_id=system_id)
 
     gaps = asyncio.run(_run())
     if not gaps:
@@ -1501,7 +1605,8 @@ def package_list() -> None:
             return [(p.id, p.label, p.readiness_pct, p.fact_count) for p in rows]
 
     for pid, label, pct, facts in asyncio.run(_run()):
-        console.print(f"[cyan]#{pid}[/cyan] {label} — readiness {pct}%, {facts} facts")
+        shown = "—" if pct is None else f"{pct}%"
+        console.print(f"[cyan]#{pid}[/cyan] {label} — readiness {shown}, {facts} facts")
 
 
 @package_app.command(name="diff")
@@ -2264,6 +2369,102 @@ def oscal_validate(
     for err in report.errors:
         console.print(f"  [red]•[/red] {err}")
     raise typer.Exit(1)
+
+
+@app.command(name="kev-sync")
+def kev_sync(
+    file: str | None = typer.Option(
+        None,
+        "--file",
+        help="Sync from a local copy of the KEV JSON feed instead of downloading it "
+        "(air-gapped deployments).",
+    ),
+) -> None:
+    """Refresh CISA's Known Exploited Vulnerabilities catalog (global reference data).
+
+    Exits non-zero, saying why, when the download or the feed is bad; the
+    catalog is then left as it was, never emptied.
+    """
+    from .intel import kev  # noqa: PLC0415
+
+    async def _run() -> dict[str, Any]:
+        payload = (
+            kev.parse_kev(Path(file).read_bytes()) if file is not None else await kev.fetch_kev()
+        )
+        async with session_scope() as session:
+            result = await kev.sync_kev(session, payload)
+            await session.commit()
+            return result
+
+    try:
+        result = asyncio.run(_run())
+    except (kev.KevError, OSError) as exc:
+        console.print(f"[red]KEV sync failed:[/red] {exc}")
+        raise typer.Exit(1) from exc
+    console.print(
+        f"KEV catalog [green]{result['catalog_version']}[/green]: {result['total']} entries "
+        f"({result['added']} new, {result['removed']} withdrawn, {result['skipped']} skipped)."
+    )
+    for line in result["skipped_detail"]:
+        console.print(f"  [yellow]skipped[/yellow] {line}")
+
+
+@app.command("posture-snapshot")
+def posture_snapshot(
+    org: int | None = typer.Option(
+        None, "--org", help="Organization id; omit to capture every live organization."
+    ),
+) -> None:
+    """Record today's posture snapshot (one row per organization per day).
+
+    A second capture on the same day replaces that day's row. Each capture is
+    written to the audit log with actor ``cli``.
+    """
+    from .analytics import posture_history  # noqa: PLC0415
+    from .api.audit import record_event  # noqa: PLC0415
+
+    today = datetime.now(UTC).date()
+
+    async def _run() -> dict[str, Any]:
+        async with session_scope() as session:
+            if org is not None:
+                found = await session.get(Organization, org)
+                if found is None or found.deleted_at is not None:
+                    return {"captured": [], "failed": [], "missing": org}
+                one = await posture_history.capture_snapshot(
+                    session, org, today=today, source="manual"
+                )
+                out: dict[str, Any] = {"captured": [{"organization_id": org, **one}], "failed": []}
+            else:
+                out = await posture_history.capture_all(session, today, source="manual")
+            for c in out["captured"]:
+                await record_event(
+                    session,
+                    actor="cli",
+                    action="posture_snapshot_captured",
+                    entity_type="posture_snapshot",
+                    entity_id=str(c["id"]),
+                    diff={
+                        "taken_on": today.isoformat(),
+                        "source": "manual",
+                        "replaced": c["replaced"],
+                    },
+                    organization_id=c["organization_id"],
+                )
+            await session.commit()
+            return out
+
+    out = asyncio.run(_run())
+    if out.get("missing") is not None:
+        console.print(f"[red]No organization with id {out['missing']}.[/red]")
+        raise typer.Exit(1)
+    for c in out["captured"]:
+        verb = "replaced" if c["replaced"] else "recorded"
+        console.print(f"  org {c['organization_id']}: {verb} snapshot for {today.isoformat()}")
+    console.print(f"[green]{len(out['captured'])}[/green] snapshot(s) captured.")
+    if out["failed"]:
+        console.print(f"[red]Failed for organization(s): {out['failed']}[/red]")
+        raise typer.Exit(1)
 
 
 if __name__ == "__main__":

@@ -77,8 +77,32 @@ GLOBAL_TABLES: frozenset[str] = frozenset(
         "scoring_controls",
         "statement_templates",
         "ksis",
+        # FedRAMP's published Marketplace (who is authorized, at what level):
+        # one public register, identical for every tenant. Written only by the
+        # source poller; a dependency links to a row by FedRAMP ID.
+        "marketplace_products",
         "ai_action_definitions",
         "alembic_version",
+        # CISA's Known Exploited Vulnerabilities catalog (0099): one public
+        # register, identical for every tenant. Written only by the KEV sync;
+        # matching against a tenant's own findings happens in that tenant's
+        # scoped query, never by copying the catalog per tenant.
+        "kev_entries",
+    }
+)
+
+#: Tables keyed by organization that no tenant may reach at all: platform state
+#: *about* an organization, not the organization's own data. They carry no
+#: ``tenant_isolation`` policy because a tenant must not see even its own row,
+#: and the guarantee is stronger than a policy -- the tenant role has no
+#: privilege on them, and RLS is forced as a second layer (asserted below).
+#: Adding one is a review decision, as for GLOBAL_TABLES.
+PLATFORM_ONLY_TABLES: frozenset[str] = frozenset(
+    {
+        # The operator's Slack thread per organization (0120). Customers never
+        # see the ops channel (alert-channels spec, section 2.4); only the
+        # notify consumer writes it, on an unscoped session.
+        "ops_notify_threads",
     }
 )
 
@@ -113,10 +137,45 @@ async def test_no_tenant_owned_table_is_missing_its_rls_policy() -> None:
         pytest.skip("RLS is a PostgreSQL feature")
     async with session_scope() as s:
         rows = (await s.execute(_ORG_TABLES_WITHOUT_POLICY_SQL)).scalars().all()
-    assert rows == [], (
-        f"tenant-owned table(s) with no tenant_isolation policy: {sorted(rows)} — "
+    unpolicied = sorted(frozenset(rows) - PLATFORM_ONLY_TABLES)
+    assert unpolicied == [], (
+        f"tenant-owned table(s) with no tenant_isolation policy: {unpolicied} — "
         "add the policy (see migration 0064 for the pattern) before this can pass"
     )
+
+
+async def test_a_platform_only_table_is_unreachable_by_the_tenant_role() -> None:
+    """The exemption above is earned, not assumed: each platform-only table
+    exists, grants the tenant role nothing, and forces RLS."""
+    if not str(get_settings().database_url).startswith("postgresql"):
+        pytest.skip("RLS is a PostgreSQL feature")
+    async with session_scope() as s:
+        for table in sorted(PLATFORM_ONLY_TABLES):
+            forced = (
+                await s.execute(
+                    text(
+                        "SELECT c.relrowsecurity AND c.relforcerowsecurity FROM pg_class c "
+                        "JOIN pg_namespace n ON n.oid = c.relnamespace "
+                        "WHERE n.nspname = 'ccf' AND c.relname = :t"
+                    ),
+                    {"t": table},
+                )
+            ).scalar_one_or_none()
+            assert forced is True, f"{table}: missing, or RLS not enabled and forced"
+            # has_table_privilege asks Postgres what the role can actually do,
+            # inherited grants included -- not what the catalog view chooses to
+            # show the current user.
+            held = [
+                p
+                for p in ("SELECT", "INSERT", "UPDATE", "DELETE", "TRUNCATE")
+                if (
+                    await s.execute(
+                        text("SELECT has_table_privilege('ccf_app', :q, :p)"),
+                        {"q": f"ccf.{table}", "p": p},
+                    )
+                ).scalar_one()
+            ]
+            assert held == [], f"{table}: the tenant role holds {held}"
 
 
 async def test_tables_without_organization_id_match_the_named_global_allowlist() -> None:

@@ -1,0 +1,144 @@
+{% extends "base.html" %}
+{% from "_viz.html" import columns %}
+{% block title %}Compliance Trends · Concord{% endblock %}
+{% block heading %}Compliance Trends{% endblock %}
+{% block subtitle %}
+{% if scoped %}
+Your organization's posture as it was recorded, day by day. Each point is a daily snapshot of what the command center computed that day; nothing here is reconstructed or estimated. Hover or focus a chart to see its values, or open its table.
+{% else %}
+This page charts one organization's recorded posture. Sign in as a member of an organization to see its history.
+{% endif %}
+{% endblock %}
+{% block actions %}
+{% if can_capture %}
+<form method="post" action="/trends/capture">
+  <button class="btn btn--primary" type="submit"><i data-lucide="camera"></i> Record today's snapshot</button>
+</form>
+{% endif %}
+{% endblock %}
+
+{% block content %}
+<style>
+  .hist-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 420px), 1fr)); gap: var(--space-4); margin-top: var(--space-4); }
+  .hist-bar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--space-3); }
+</style>
+{% if not scoped %}
+<div class="empty-state card">
+  <i data-lucide="building-2"></i>
+  <h2>No organization in scope</h2>
+  <p>Posture history is kept per organization and never aggregated across them. Global and unauthenticated sessions see this instead.</p>
+</div>
+{% else %}
+<section class="card panel">
+  <div class="panel__body hist-bar">
+    <div>
+      {% if t.count %}
+      <strong>{{ t.count }} snapshot{{ 's' if t.count != 1 }}</strong>
+      <span class="dim">from {{ t.first_on.strftime('%b %-d, %Y') }} to {{ t.last_on.strftime('%b %-d, %Y') }}{% if t.range_days %}, in the last {{ t.range_days }} days{% endif %} · {{ t.total_recorded }} recorded in all</span>
+      {% else %}
+      <strong>No snapshots{% if t.range_days %} in the last {{ t.range_days }} days{% endif %}</strong>
+      <span class="dim">· {{ t.total_recorded }} recorded in all</span>
+      {% endif %}
+      {% if captured %}<span class="chip chip--ok">{{ "Today's snapshot replaced" if captured == 'replaced' else "Today's snapshot recorded" }}</span>{% endif %}
+    </div>
+    <form method="get" action="/trends" class="filters">
+      <label class="label" for="days">Range</label>
+      <select class="select" id="days" name="days">
+        {% for r in ranges %}<option value="{{ r }}" {% if r == days %}selected{% endif %}>{{ 'All recorded' if r == 0 else 'Last %d days' % r }}</option>{% endfor %}
+      </select>
+      <button class="btn btn--secondary btn--sm" type="submit">Show</button>
+    </form>
+  </div>
+</section>
+
+{% if not t.enough %}
+<div class="empty-state card">
+  <i data-lucide="line-chart"></i>
+  <h2>{% if t.count == 1 %}One snapshot is not a trend{% else %}No posture history in this range{% endif %}</h2>
+  <p>
+    {% if t.count == 1 %}One snapshot is recorded in this range ({{ t.first_on.strftime('%b %-d, %Y') }}); a trend needs at least two.{% else %}No posture snapshot is recorded in this range.{% endif %}
+    Snapshots are taken once a day by the scheduler{% if can_capture %}, or now with "Record today's snapshot" above{% else %}, or by an administrator from this page{% endif %}. Concord keeps no posture history from before the first snapshot.
+  </p>
+</div>
+{% else %}
+<section class="hist-grid" aria-label="Posture over time">
+  {% for c in t.charts %}
+  <article class="card panel" id="trend-{{ c.key }}">
+    <header class="panel__head">
+      <h2 class="panel__title">{{ c.title }}</h2>
+      <span class="panel__hint">{% if c.latest is not none %}{{ c.latest }} {{ c.unit }}{% if c.first is not none and c.recorded > 1 %} · {{ c.first }} on {{ c.first_label }}{% endif %}{% endif %}</span>
+    </header>
+    <div class="panel__body">
+      {% if c.recorded %}
+      {{ columns(c.labels, c.series, true, 190, c.title ~ ' per recorded snapshot') }}
+      {% else %}<p class="panel__empty">No snapshot in this range recorded this metric.</p>{% endif %}
+    </div>
+    <footer class="panel__foot" title="{{ c.basis }}">
+      {{ c.basis }}{% if c.shown < c.recorded %} {{ c.shown }} of {{ c.recorded }} snapshots drawn: the latest in each interval.{% endif %}
+    </footer>
+  </article>
+  {% endfor %}
+
+  {% for f in t.frameworks %}
+  <article class="card panel">
+    <header class="panel__head">
+      <h2 class="panel__title">{{ f.title }}</h2>
+      <span class="panel__hint">latest {{ '%d%%'|format(f.latest_pct) if f.latest_pct is not none else '—' }} addressed</span>
+    </header>
+    <div class="panel__body">
+      {{ columns(f.labels, f.series, true, 190, f.title ~ ' ' ~ f.unit ~ 's addressed per recorded snapshot') }}
+    </div>
+    <footer class="panel__foot">{{ f.basis }}{% if f.shown < f.recorded %} {{ f.shown }} of {{ f.recorded }} snapshots drawn: the latest in each interval.{% endif %}</footer>
+  </article>
+  {% else %}
+  <article class="card panel">
+    <header class="panel__head"><h2 class="panel__title">Framework posture</h2></header>
+    <p class="panel__empty">No snapshot in this range measured a framework: no live system declared an 800-53 or 800-171 baseline on those days.</p>
+  </article>
+  {% endfor %}
+</section>
+{% endif %}
+
+{% if t.rows %}
+<article class="card panel">
+  <header class="panel__head">
+    <h2 class="panel__title">Every snapshot in this range</h2>
+    <span class="panel__hint">newest first</span>
+  </header>
+  <div class="table-wrap">
+    <table class="data">
+      <thead><tr>
+        <th scope="col">Day</th>
+        <th scope="col" title="Controls whose latest test passed, over controls whose latest test produced a result">Controls passing</th>
+        <th scope="col">Open POA&amp;Ms</th>
+        <th scope="col">Active risks</th>
+        <th scope="col" title="Completed or closed POA&amp;Ms over POA&amp;Ms that need or needed remediation">Remediation</th>
+        <th scope="col">Overdue</th>
+        <th scope="col" title="Average SPRS score over the systems that have one; the lowest system's score beside it. SPRS runs from -203 to 110.">SPRS average (lowest)</th>
+        <th scope="col" title="Repository evidence not expired, over evidence with an expiry date">Evidence current</th>
+        <th scope="col" title="Implementations within their continuous-monitoring window">Monitoring healthy</th>
+        <th scope="col">Recorded by</th>
+      </tr></thead>
+      <tbody>
+        {% for r in t.rows %}
+        <tr>
+          <th scope="row">{{ r.taken_on.strftime('%b %-d, %Y') }}</th>
+          <td>{{ r.controls_passing if r.controls_passing is not none else '—' }}/{{ r.controls_judged if r.controls_judged is not none else '—' }} <span class="dim">{{ '%d%%'|format(r.controls_pct) if r.controls_pct is not none else '—' }}</span></td>
+          <td>{{ r.poams_open if r.poams_open is not none else '—' }}</td>
+          <td>{{ r.risks_open if r.risks_open is not none else '—' }}</td>
+          <td>{{ r.resolved if r.resolved is not none else '—' }}/{{ r.remediable if r.remediable is not none else '—' }} <span class="dim">{{ '%d%%'|format(r.remediation_pct) if r.remediation_pct is not none else '—' }}</span></td>
+          <td>{{ r.overdue if r.overdue is not none else '—' }}</td>
+          <td>{% if r.sprs_average is not none %}{{ r.sprs_average }} <span class="dim">({{ r.sprs_minimum }}) · {{ r.sprs_systems }} system{{ 's' if r.sprs_systems != 1 }}</span>{% else %}<span class="dim">— no system scored</span>{% endif %}</td>
+          <td>{{ r.evidence_current if r.evidence_current is not none else '—' }}/{{ r.evidence_dated if r.evidence_dated is not none else '—' }} <span class="dim">{{ '%d%%'|format(r.evidence_pct) if r.evidence_pct is not none else '—' }}</span></td>
+          <td>{{ r.monitoring_healthy if r.monitoring_healthy is not none else '—' }}/{{ r.monitoring_total if r.monitoring_total is not none else '—' }} <span class="dim">{{ '%d%%'|format(r.monitoring_pct) if r.monitoring_pct is not none else '—' }}</span></td>
+          <td><span class="chip chip--ghost">{{ 'scheduler' if r.source == 'scheduler' else 'manual' }}</span></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <footer class="panel__foot">SPRS is tabulated rather than charted: it can be negative, and the column chart draws counts from zero.</footer>
+</article>
+{% endif %}
+{% endif %}
+{% endblock %}

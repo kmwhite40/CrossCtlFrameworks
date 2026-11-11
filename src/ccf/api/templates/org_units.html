@@ -1,0 +1,98 @@
+{% extends "base.html" %}
+{% block title %}Organization &amp; Business Units · Concord{% endblock %}
+{% block heading %}Organization &amp; business units{% endblock %}
+{% block subtitle %}The organization's business-unit tree and which unit each live system belongs to. A system belongs to at most one unit; a unit's total includes the units below it.{% endblock %}
+{% block content %}
+<section class="kpi-grid kpi-grid--4" data-live="{{ live_systems }}" data-assigned="{{ assigned }}" data-unassigned="{{ unassigned }}">
+  <div class="kpi"><span class="kpi__label">Business units</span><span class="kpi__value">{{ rows | length }}</span></div>
+  <div class="kpi"><span class="kpi__label">Live systems</span><span class="kpi__value">{{ live_systems }}</span><span class="kpi__meta">deleted systems are not counted</span></div>
+  <div class="kpi"><span class="kpi__label">Assigned to a unit</span><span class="kpi__value">{{ assigned }}</span><span class="kpi__meta">of {{ live_systems }} live system{{ 's' if live_systems != 1 }}</span></div>
+  <div class="kpi"><span class="kpi__label">Not assigned</span><span class="kpi__value">{{ unassigned }}</span><span class="kpi__meta">of {{ live_systems }} live system{{ 's' if live_systems != 1 }}</span></div>
+</section>
+
+<article class="card panel">
+  <header class="panel__head"><h2 class="panel__title">Unit tree</h2><span class="panel__hint">"Systems" counts the unit's own; "incl. below" adds every unit beneath it</span></header>
+  {% if rows %}
+  <div class="table-wrap"><table class="data">
+    <thead><tr><th>Unit</th><th>Parent</th><th>Owner</th><th>Systems</th><th>Incl. below</th><th>Teams</th>{% if can_admin %}<th></th>{% endif %}</tr></thead>
+    <tbody>{% for r in rows %}<tr id="unit-{{ r.unit.id }}" data-direct="{{ r.direct }}" data-total="{{ r.total }}" data-teams="{{ r.teams }}">
+      <td><span style="padding-left:{{ r.depth * 20 }}px">{% if r.depth %}↳ {% endif %}<strong>{{ r.unit.name }}</strong></span>{% if r.unit.description %}<div class="dim clamp-3" style="padding-left:{{ r.depth * 20 }}px;font-size:12.5px;max-width:60ch">{{ r.unit.description }}</div>{% endif %}</td>
+      <td>{{ r.parent or '—' }}</td>
+      <td>{{ r.owner or '—' }}</td>
+      <td class="mono">{{ r.direct }}</td>
+      <td class="mono">{{ r.total }}</td>
+      <td class="mono">{{ r.teams }}</td>
+      {% if can_admin %}<td>
+        <details><summary class="btn btn--ghost btn--sm">Edit</summary>
+          <form method="post" action="/org-units/{{ r.unit.id }}" class="filters" style="margin-top:8px;min-width:280px">
+            <div class="field-group"><label class="label" for="u{{ r.unit.id }}-name">Name</label><input id="u{{ r.unit.id }}-name" class="input" name="name" value="{{ r.unit.name }}" required maxlength="255"></div>
+            <div class="field-group"><label class="label" for="u{{ r.unit.id }}-desc">Description</label><input id="u{{ r.unit.id }}-desc" class="input" name="description" value="{{ r.unit.description or '' }}"></div>
+            <div class="field-group"><label class="label" for="u{{ r.unit.id }}-parent">Parent</label>
+              <select id="u{{ r.unit.id }}-parent" class="select" name="parent_id"><option value="">— top level —</option>
+                {% for u in r.parent_options %}<option value="{{ u.id }}"{% if u.id == r.unit.parent_id %} selected{% endif %}>{{ u.name }}</option>{% endfor %}
+              </select></div>
+            <div class="field-group"><label class="label" for="u{{ r.unit.id }}-owner">Owner</label>
+              <select id="u{{ r.unit.id }}-owner" class="select" name="owner_user_id"><option value="">— none —</option>
+                {% for u in users %}<option value="{{ u.id }}"{% if u.id == r.unit.owner_user_id %} selected{% endif %}>{{ u.full_name or u.email }}</option>{% endfor %}
+              </select></div>
+            <button class="btn btn--primary btn--sm" type="submit">Save</button>
+          </form>
+          <form method="post" action="/org-units/{{ r.unit.id }}/delete" style="margin-top:8px">
+            <button class="btn btn--ghost btn--sm" type="submit">Delete unit</button>
+            <span class="dim" style="font-size:12.5px">Sub-units move up to its parent; its systems and teams become unassigned.</span>
+          </form>
+        </details>
+      </td>{% endif %}
+    </tr>{% endfor %}</tbody>
+  </table></div>
+  {% else %}
+  <div class="empty-state">
+    <h2>No business units yet</h2>
+    <p>Concord has no record of how this organization is divided. {% if can_admin %}Add the first unit below, then assign live systems to it.{% else %}An administrator can add units here.{% endif %}</p>
+  </div>
+  {% endif %}
+</article>
+
+{% if can_admin %}
+<article class="card panel">
+  <header class="panel__head"><h2 class="panel__title">Add a business unit</h2></header>
+  <form method="post" action="/org-units" class="card__body filters">
+    <div class="field-group"><label class="label" for="new-name">Name</label><input id="new-name" class="input" name="name" required maxlength="255"></div>
+    <div class="field-group"><label class="label" for="new-desc">Description</label><input id="new-desc" class="input" name="description"></div>
+    <div class="field-group"><label class="label" for="new-parent">Parent</label>
+      <select id="new-parent" class="select" name="parent_id"><option value="">— top level —</option>
+        {% for u in units %}<option value="{{ u.id }}">{{ u.name }}</option>{% endfor %}
+      </select></div>
+    <div class="field-group"><label class="label" for="new-owner">Owner</label>
+      <select id="new-owner" class="select" name="owner_user_id"><option value="">— none —</option>
+        {% for u in users %}<option value="{{ u.id }}">{{ u.full_name or u.email }}</option>{% endfor %}
+      </select></div>
+    <button class="btn btn--primary" type="submit">Add unit</button>
+  </form>
+</article>
+{% endif %}
+
+<article class="card panel" id="systems">
+  <header class="panel__head"><h2 class="panel__title">Systems by unit</h2><span class="panel__hint">{{ live_systems }} live system{{ 's' if live_systems != 1 }}</span></header>
+  {% if systems %}
+  <div class="table-wrap"><table class="data">
+    <thead><tr><th>System</th><th>Business unit</th>{% if can_admin and rows %}<th>Assign</th>{% endif %}</tr></thead>
+    <tbody>{% for s in systems %}<tr>
+      <td><a href="/systems/{{ s.id }}">{{ s.name }}</a></td>
+      <td>{% if s.business_unit_id and s.business_unit_id in unit_names %}{{ unit_names[s.business_unit_id] }}{% else %}<span class="chip chip--ghost">not assigned</span>{% endif %}</td>
+      {% if can_admin and rows %}<td>
+        <form method="post" action="/org-units/assign" class="row" style="gap:6px">
+          <input type="hidden" name="system_id" value="{{ s.id }}">
+          <select class="select select--sm" name="business_unit_id" aria-label="Business unit for {{ s.name }}"><option value="">— none —</option>
+            {% for u in units %}<option value="{{ u.id }}"{% if u.id == s.business_unit_id %} selected{% endif %}>{{ u.name }}</option>{% endfor %}
+          </select>
+          <button class="btn btn--ghost btn--sm" type="submit">Set</button>
+        </form>
+      </td>{% endif %}
+    </tr>{% endfor %}</tbody>
+  </table></div>
+  {% else %}
+  <div class="empty-state"><h2>No live systems</h2><p>Systems are registered on <a href="/systems">Assets &amp; Systems</a>; once one exists it can be placed in a unit here.</p></div>
+  {% endif %}
+</article>
+{% endblock %}

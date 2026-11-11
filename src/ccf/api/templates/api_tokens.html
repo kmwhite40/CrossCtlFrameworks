@@ -1,0 +1,74 @@
+{% extends "base.html" %}
+{% block title %}API tokens · Concord{% endblock %}
+{% block heading %}API tokens{% endblock %}
+{% block subtitle %}An API token signs a client in as you, with your role, until it is rotated or revoked. Concord stores only a SHA-256 digest of it, so a token is shown once, when it is issued, and can never be shown again.{% endblock %}
+{% block content %}
+
+{% if issued %}
+<section class="card panel" aria-live="polite">
+  <header class="panel__head"><h2 class="panel__title">Your new token</h2><span class="chip chip--warn">shown once</span></header>
+  <div class="panel__body">
+    <p class="dim">Copy it now. Leaving or reloading this page discards it; Concord keeps only its digest. Your previous token, if you had one, stopped working when this one was issued.</p>
+    <p><code class="mono" id="issued-token">{{ issued }}</code></p>
+    <p class="dim">Send it as <code class="mono">Authorization: Bearer &lt;token&gt;</code>.</p>
+  </div>
+</section>
+{% endif %}
+
+{% if notice == 'revoked' %}
+<p class="chip chip--ok" role="status">Your token is revoked. Requests presenting it are refused from now on.</p>
+{% elif notice == 'revoked-user' %}
+<p class="chip chip--ok" role="status">That user's token is revoked. Requests presenting it are refused from now on.</p>
+{% endif %}
+
+<section class="card panel">
+  <header class="panel__head"><h2 class="panel__title">Your token</h2></header>
+  <div class="panel__body">
+    {% if me is none %}
+    <p class="dim">This session is not a user account (it is the platform's system principal), so there is no token to hold here. Tokens for users are issued with <code class="mono">ccf user-create</code> or by the user on this page.</p>
+    {% else %}
+    <p>
+      {% if me.api_token_hash %}<span class="chip chip--info">token issued</span> <span class="dim">{{ me.email }} holds an API token. When it was issued is not recorded; the audit log has each rotation.</span>
+      {% else %}<span class="chip chip--ghost">no token</span> <span class="dim">{{ me.email }} holds no API token.</span>{% endif %}
+    </p>
+    {% if may_manage_own %}
+    <div class="row">
+      <form method="post" action="/settings/api-tokens/rotate">
+        <button class="btn btn--primary btn--sm" type="submit"><i data-lucide="refresh-cw"></i> {% if me.api_token_hash %}Rotate token{% else %}Issue a token{% endif %}</button>
+      </form>
+      {% if me.api_token_hash %}
+      <form method="post" action="/settings/api-tokens/revoke">
+        <button class="btn btn--secondary btn--sm" type="submit"><i data-lucide="ban"></i> Revoke token</button>
+      </form>
+      {% endif %}
+    </div>
+    {% elif is_viewer %}
+    <p class="dim">The viewer role is read-only, so it cannot issue, rotate or revoke a token. An administrator can revoke a viewer's token on this page.</p>
+    {% endif %}
+    {% endif %}
+  </div>
+</section>
+
+{% if is_admin %}
+<section class="card panel">
+  <header class="panel__head"><h2 class="panel__title">Users holding a token</h2><span class="panel__hint">{{ holders | length }} {% if scoped %}in this organization{% else %}across every organization{% endif %}</span></header>
+  {% if holders %}
+  <div class="table-wrap"><table>
+    <thead><tr><th>User</th><th>Role</th><th>Account</th><th></th></tr></thead>
+    <tbody>{% for u in holders %}<tr>
+      <td class="mono">{{ u.email }}</td>
+      <td><span class="chip chip--brand">{{ u.role }}</span></td>
+      <td>{% if u.active %}<span class="chip chip--ok">active</span>{% else %}<span class="chip chip--ghost">inactive</span>{% endif %}</td>
+      <td>
+        <form method="post" action="/settings/api-tokens/users/{{ u.id }}/revoke">
+          <button class="btn btn--ghost btn--sm" type="submit" aria-label="Revoke the token of {{ u.email }}"><i data-lucide="ban"></i> Revoke</button>
+        </form>
+      </td>
+    </tr>{% endfor %}</tbody>
+  </table></div>
+  {% else %}
+  <div class="empty-state"><i data-lucide="key-round"></i><h2>No one holds a token</h2><p>No user in this organization has an API token. A user issues their own on this page, or an operator issues one with <code class="mono">ccf user-create</code>.</p></div>
+  {% endif %}
+</section>
+{% endif %}
+{% endblock %}

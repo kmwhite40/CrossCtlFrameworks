@@ -33,15 +33,19 @@ from typing import Any
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ..analytics import posture_history
 from ..assurance import builder as assurance_builder
+from ..ato import lifecycle as ato_lifecycle
 from ..capability import derive as capability_derive
 from ..config import get_settings
 from ..db import get_engine, session_scope, set_session_tenant
 from ..etl.sources import poll as poll_sources
+from ..evidence import service as evidence_service
 from ..logging import get_logger
 from ..models import Organization, System
 from ..packs import sync as pack_sync
-from . import collection, conmon, control_tests, digest
+from ..vdr import service as vdr_service
+from . import collection, conmon, control_tests, digest, kri
 
 log = get_logger(__name__)
 
@@ -143,14 +147,19 @@ async def _run_per_tenant_cycle(
     pack_sync_results: list[dict[str, Any]] = []
     conmon_results: list[dict[str, Any]] = []
     control_test_results: list[dict[str, Any]] = []
+    digest_results: list[dict[str, Any]] = []
+    ato_expiry_results: list[dict[str, Any]] = []
+    vdr_due_results: list[dict[str, Any]] = []
     derive_results: list[dict[str, Any]] = []
     assurance_results: list[dict[str, Any]] = []
+    snapshot_results: list[dict[str, Any]] = []
     posture_results: list[dict[str, Any]] = []
     derive_enabled = get_settings().capability_derive_enabled
     #: (organization id, step) for every savepointed step that raised. Counted
     #: rather than only logged, so the cycle summary can distinguish "did
     #: nothing" from "tried and failed".
     step_failures: list[dict[str, str]] = []
+    evidence_expired = 0
     for org_id in org_ids:
         await set_session_tenant(session, org_id)
         try:
@@ -179,6 +188,22 @@ async def _run_per_tenant_cycle(
             )
             step_failures.append({"organization_id": str(org_id), "step": "pack_sync"})
         try:
+            # Before conmon, so anything reading freshness this cycle sees it.
+            # mark_expired had no caller: expired evidence stayed "approved"
+            # and was sealed into packages as current.
+            async with session.begin_nested():
+                evidence_expired += await evidence_service.mark_expired(
+                    session, org_id=org_id, today=today
+                )
+        except Exception as e:
+            log.warning(
+                "scheduler.per_tenant_step_failed",
+                org_id=org_id,
+                step="evidence_expiry",
+                error=str(e)[:200],
+            )
+            step_failures.append({"organization_id": str(org_id), "step": "evidence_expiry"})
+        try:
             async with session.begin_nested():
                 result = await conmon.scan(session, today=today, org_id=org_id)
                 conmon_results.append({"organization_id": org_id, **result})
@@ -190,6 +215,56 @@ async def _run_per_tenant_cycle(
                 error=str(e)[:200],
             )
             step_failures.append({"organization_id": str(org_id), "step": "conmon"})
+        try:
+            # A KEV due date (synced above) or a class deadline earlier than a
+            # flaw's due_on moves it earlier -- before, only recording an
+            # evaluation did. Before the digest, so this cycle's alerts see it.
+            async with session.begin_nested():
+                vdr_due_results.append(await vdr_service.tighten_due_dates(session, org_id=org_id))
+        except Exception as e:
+            log.warning(
+                "scheduler.per_tenant_step_failed",
+                org_id=org_id,
+                step="vdr_due",
+                error=str(e)[:200],
+            )
+            step_failures.append({"organization_id": str(org_id), "step": "vdr_due"})
+        try:
+            # Before the digest, so this cycle's alerts already see an ATO that
+            # just lapsed as expired. Nothing else ever writes ``expired``.
+            async with session.begin_nested():
+                ato_expiry_results.append(
+                    {
+                        "organization_id": org_id,
+                        **await ato_lifecycle.expire_due(session, today=today, org_id=org_id),
+                    }
+                )
+        except Exception as e:
+            log.warning(
+                "scheduler.per_tenant_step_failed",
+                org_id=org_id,
+                step="ato_expiry",
+                error=str(e)[:200],
+            )
+            step_failures.append({"organization_id": str(org_id), "step": "ato_expiry"})
+        try:
+            # This organization's alerts, stored with its organization_id under
+            # its own RLS tenant, so its members' inboxes can show them.
+            async with session.begin_nested():
+                digest_results.append(
+                    {
+                        "organization_id": org_id,
+                        **await digest.run(session, today=today, org_id=org_id),
+                    }
+                )
+        except Exception as e:
+            log.warning(
+                "scheduler.per_tenant_step_failed",
+                org_id=org_id,
+                step="digest",
+                error=str(e)[:200],
+            )
+            step_failures.append({"organization_id": str(org_id), "step": "digest"})
         try:
             async with session.begin_nested():
                 result = await control_tests.run_due(session, today=today, org_id=org_id)
@@ -272,6 +347,7 @@ async def _run_per_tenant_cycle(
                         "nodes": run.node_count,
                         "edges": run.edge_count,
                         "status": run.status,
+                        "failed": sorted(((run.detail or {}).get("failed") or {}).keys()),
                     }
                 )
         except Exception as e:
@@ -282,11 +358,55 @@ async def _run_per_tenant_cycle(
                 error=str(e)[:200],
             )
             step_failures.append({"organization_id": str(org_id), "step": "assurance_graph"})
+        try:
+            # Key risk indicators with a computed metric get today's reading
+            # (manual KRIs are left to people). Before the snapshot, after the
+            # steps that change what the metrics read.
+            async with session.begin_nested():
+                await kri.record_computed_readings(session, org_id, today)
+        except Exception as e:
+            log.warning(
+                "scheduler.per_tenant_step_failed",
+                org_id=org_id,
+                step="kri_readings",
+                error=str(e)[:200],
+            )
+            step_failures.append({"organization_id": str(org_id), "step": "kri_readings"})
+        try:
+            # The day's posture, copied from what the steps above just
+            # computed, so trends and forecasts read recorded history rather
+            # than reconstruct it. After everything else for the same reason
+            # the assurance graph is: a snapshot taken first would record the
+            # previous cycle. One row per organization per day; a later cycle
+            # the same day replaces it.
+            async with session.begin_nested():
+                snap = await posture_history.capture_snapshot(
+                    session, org_id, today=today, source="scheduler"
+                )
+                snapshot_results.append({"organization_id": org_id, **snap})
+        except Exception as e:
+            log.warning(
+                "scheduler.per_tenant_step_failed",
+                org_id=org_id,
+                step="posture_snapshot",
+                error=str(e)[:200],
+            )
+            step_failures.append({"organization_id": str(org_id), "step": "posture_snapshot"})
     # Back to bypass before any global step (or the advisory unlock) runs.
     # Suppressed: a prior step's failure must not prevent the tenant clamp
     # from being reset — mirrors the advisory-unlock suppress in run_cycle.
     with contextlib.suppress(Exception):
         await set_session_tenant(session, None)
+    try:
+        # Evidence with no organization (single-operator mode stores it that
+        # way) is invisible to every per-org pass above, so it never expired.
+        async with session.begin_nested():
+            evidence_expired += await evidence_service.mark_expired(
+                session, today=today, unowned=True
+            )
+    except Exception as e:
+        log.warning("scheduler.global_step_failed", step="evidence_expiry", error=str(e)[:200])
+        step_failures.append({"organization_id": "", "step": "evidence_expiry"})
     return {
         # Every per-tenant step above is savepointed, so a failure is contained
         # and logged as its own warning -- and then contributes nothing to the
@@ -295,6 +415,7 @@ async def _run_per_tenant_cycle(
         # collection had nothing to do. The count travels with the results so
         # the summary can say so.
         "step_failures": step_failures,
+        "evidence_expired": evidence_expired,
         "collection": {
             "organizations_processed": [r["organization_id"] for r in collection_results],
             "connectors_run": [
@@ -305,10 +426,21 @@ async def _run_per_tenant_cycle(
             "captured": sum(r["captured"] for r in collection_results),
             "drift": sum(r["drift"] for r in collection_results),
         },
+        "posture_snapshots": {
+            "organizations_processed": [r["organization_id"] for r in snapshot_results],
+        },
         "assurance_graph": {
             "organizations_processed": [r["organization_id"] for r in assurance_results],
             "nodes": sum(r["nodes"] for r in assurance_results),
             "edges": sum(r["edges"] for r in assurance_results),
+            # A build that ran with a part missing is not a clean one; the
+            # summary names it ("risks@3") rather than reporting counts alone.
+            "partial": [
+                f"{part}@{r['organization_id']}"
+                for r in assurance_results
+                if r["status"] == "partial"
+                for part in (r["failed"] or ["unknown"])
+            ],
         },
         "pack_sync": {
             "organizations_processed": [r["organization_id"] for r in pack_sync_results],
@@ -319,6 +451,9 @@ async def _run_per_tenant_cycle(
         "conmon": conmon_results,
         "posture_scan": posture_results,
         "control_tests": control_test_results,
+        "digest_per_org": digest_results,
+        "ato_expiry": ato_expiry_results,
+        "vdr_due": vdr_due_results,
         "capability_derive": {
             "organizations_processed": [r["organization_id"] for r in derive_results],
             "systems": sum(r["systems"] for r in derive_results),
@@ -423,11 +558,17 @@ def cycle_summary(out: dict[str, Any]) -> dict[str, Any]:
         "poams_recovered": _total(conmon, "poams_recovered"),
         "tasks_created": _total(conmon, "tasks_created"),
         "tests_evaluated": _total(tests, "evaluated"),
+        # Due dates moved earlier by a KEV due date or class deadline.
+        "vdr_due_tightened": _total(out.get("vdr_due") or [], "tightened"),
         "tests_failed": _total(tests, "fail"),
         "tests_warned": _total(tests, "warn"),
         "derive_systems": int(derive.get("systems") or 0),
         "assurance_nodes": int(assurance.get("nodes") or 0),
         "assurance_edges": int(assurance.get("edges") or 0),
+        # How many organizations' graphs were built with a part missing.
+        # Always present, like ``failures``: zero is the reading that makes a
+        # non-zero one legible.
+        "assurance_partial": len({p.rsplit("@", 1)[-1] for p in _parts(assurance)}),
         "fedramp_scanned": int(fedramp.get("systems_scanned") or 0),
         # An int, not a list. `len()` here passed every hand-written test and
         # crashed the first real cycle that had drift, because `0 or []` is
@@ -443,7 +584,15 @@ def cycle_summary(out: dict[str, Any]) -> dict[str, Any]:
         )
     if global_failures:
         summary["failed_global_steps"] = sorted(set(global_failures))
+    if _parts(assurance):
+        summary["assurance_partial_parts"] = sorted(set(_parts(assurance)))
     return summary
+
+
+def _parts(assurance: dict[str, Any]) -> list[str]:
+    """The assurance step's ``part@org`` list, or ``[]`` for any other shape."""
+    parts = assurance.get("partial")
+    return [str(p) for p in parts] if isinstance(parts, list) else []
 
 
 async def run_cycle() -> dict[str, Any]:
@@ -487,18 +636,50 @@ async def run_cycle() -> dict[str, Any]:
                 log.warning("scheduler.global_step_failed", step="poll_sources", error=str(e)[:200])
                 global_failures.append("poll_sources")
 
+            if get_settings().kev_sync_enabled:
+                try:
+                    # CISA's KEV catalog is one table for every tenant, so this
+                    # runs once per cycle, unscoped. It skips when already
+                    # synced today and raises on any failure rather than
+                    # writing an empty catalog (ccf.intel.kev). Before the
+                    # per-tenant pass, whose vdr_due step reads it: run after,
+                    # a CVE CISA listed today reached its POA&Ms a cycle late.
+                    async with session.begin_nested():
+                        from ..intel import kev  # noqa: PLC0415 — lazy, keeps startup light
+
+                        out["kev"] = await kev.refresh_kev(session, today=today)
+                except Exception as e:
+                    log.warning("scheduler.global_step_failed", step="kev_sync", error=str(e)[:200])
+                    global_failures.append("kev_sync")
+
+            # GLOBAL: outbox retention. Deletes finished derived-view jobs after
+            # a day and finished webhook jobs after 30 days, never `failed`
+            # ones; ccf_app has no DELETE, so it runs here on the unscoped
+            # session.
+            try:
+                async with session.begin_nested():
+                    from ..events import retention  # noqa: PLC0415 — lazy, keeps startup light
+
+                    out["outbox_retention"] = await retention.purge_outbox(session)
+            except Exception as e:
+                log.warning(
+                    "scheduler.global_step_failed", step="outbox_retention", error=str(e)[:200]
+                )
+                global_failures.append("outbox_retention")
+
             # PER-TENANT: collection, ConMon, and control-test auto-run — one
             # pass per organization, each clamped to its own RLS tenant.
             org_ids = await _active_org_ids(session)
             out.update(await _run_per_tenant_cycle(session, org_ids, today=today))
 
-            # GLOBAL: cross-module alert digest (ATO/POA&M/policy/vendor/etc.
-            # rollups spanning the whole platform) — intentionally unscoped.
-            # Same savepoint containment as above, so a digest failure can't
-            # abort the transaction out from under the fedramp20x scan below.
+            # GLOBAL: platform alerts only (upstream catalog drift). Each
+            # organization's alerts are raised in its own per-tenant slice
+            # above: run unscoped, they were stored with no organization and
+            # no member could ever see them. Same savepoint containment as
+            # above, so a failure can't abort the fedramp20x scan below.
             try:
                 async with session.begin_nested():
-                    out["digest"] = await digest.run(session, today=today)
+                    out["digest"] = await digest.run_platform(session, today=today)
             except Exception as e:
                 log.warning("scheduler.global_step_failed", step="digest", error=str(e)[:200])
                 global_failures.append("digest")

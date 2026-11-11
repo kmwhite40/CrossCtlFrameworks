@@ -11,8 +11,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from ...ato import lifecycle
 from ...auth import Principal
-from ...models import System
 from ...models_packages import PACKAGE_KINDS, AuthorizationPackage
 from ...packages import service
 from ..auth_deps import get_principal
@@ -39,6 +39,11 @@ def _pkg_out(p: AuthorizationPackage) -> dict[str, Any]:
         "created_by": p.created_by,
         "created_at": p.created_at,
         "summary": p.summary,
+        "status": p.status,
+        "manifest_sha256": p.manifest_sha256,
+        "authorization_expires_on": p.authorization_expires_on,
+        "status_changed_at": p.status_changed_at,
+        "available_actions": lifecycle.available_actions(p.status),
     }
 
 
@@ -74,11 +79,12 @@ async def create_package(
     """Export (persist) an authorization package: capture facts as provenance."""
     if body.kind not in PACKAGE_KINDS:
         raise HTTPException(422, f"kind must be one of {PACKAGE_KINDS}")
-    sysm = await session.get(System, body.system_id)
-    if sysm is None or (principal.org_id is not None and sysm.organization_id != principal.org_id):
-        raise HTTPException(404, "system not found")
+    sysm = await require_system_in_scope(session, body.system_id, principal)
+    # The system's organization, not the caller's: a global (single-operator)
+    # principal has none, and an org-less package is invisible to the tenant
+    # whose system it describes.
     pkg = await service.create_package(
-        session, org_id=principal.org_id, system_id=body.system_id,
+        session, org_id=sysm.organization_id, system_id=body.system_id,
         kind=body.kind, label=body.label, created_by=principal.email,
     )
     await session.commit()
@@ -157,6 +163,48 @@ async def replay_package(
     run = await service.replay_package(session, org_id=principal.org_id, package=p)
     await session.commit()
     return {"package_id": pid, "status": run.status, "drift": run.drift}
+
+
+class PackageActionIn(BaseModel):
+    reason: str | None = None
+    expires_on: date | None = None
+
+
+@router.post("/{pid}/actions/{action}")
+async def package_action(
+    pid: int,
+    action: str,
+    body: PackageActionIn | None = None,
+    session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(get_principal),
+) -> dict[str, Any]:
+    """Move a package along its review path (see ``ccf.ato.lifecycle``)."""
+    p = await _require_pkg(session, pid, principal)
+    body = body or PackageActionIn()
+    try:
+        await lifecycle.apply(
+            session, package=p, action=action, principal=principal,
+            reason=body.reason, expires_on=body.expires_on,
+        )
+    except lifecycle.LifecycleError as e:
+        raise HTTPException(e.status, str(e)) from e
+    await session.commit()
+    return _pkg_out(await _require_pkg(session, pid, principal))
+
+
+@router.get("/{pid}/events")
+async def package_events(
+    pid: int,
+    session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(get_principal),
+) -> list[dict[str, Any]]:
+    p = await _require_pkg(session, pid, principal)
+    return [
+        {"action": e.action, "from": e.from_status, "to": e.to_status, "actor": e.actor,
+         "acted_as": e.acted_as, "reason": e.reason, "manifest_sha256": e.manifest_sha256,
+         "at": e.created_at}
+        for e in await lifecycle.events(session, p.id)
+    ]
 
 
 # --- FedRAMP 20x authorization delta (mounted on the fedramp path) -----------

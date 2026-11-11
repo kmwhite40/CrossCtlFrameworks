@@ -78,11 +78,12 @@ where = ["src"]
 "ccf.api" = ["templates/*.html", "static/**/*"]
 "ccf.etl" = ["headers.v1_1.json"]
 "ccf.scoring" = ["seed.json"]
-"ccf.fedramp20x" = ["ksi_catalog.json", "oscal_ksi.schema.json"]
+"ccf.fedramp20x" = ["rules_data/*.json", "marketplace_data/*.json", "guidance_data/*.json", "oscal_ksi.schema.json"]
 "ccf.packs" = ["bundled/*/pack.json"]
 "ccf.catalog" = ["oscal_data/*.json"]
 "ccf.oscal" = ["schemas/*.json"]
 "ccf.cr26" = ["schemas/*.json"]
+"ccf.connectors" = ["data/*.json"]
 
 [tool.ruff]
 line-length = 100

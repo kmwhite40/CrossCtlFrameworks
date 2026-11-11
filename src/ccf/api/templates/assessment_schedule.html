@@ -1,0 +1,62 @@
+{% extends "base.html" %}
+{% block title %}Scheduled Assessments · Concord{% endblock %}
+{% block heading %}Scheduled assessments{% endblock %}
+{% block subtitle %}When each control implementation is next due for assessment, and when each control test next runs, on this organization's live systems. Dates are the recorded <code>next_assessment_due</code> of each implementation; a test's next run is its last run plus its frequency.{% endblock %}
+{% block content %}
+<article class="card panel">
+  <header class="panel__head"><h2 class="panel__title">Control implementations by next assessment</h2>
+    <span class="panel__hint">{{ impl_total }} implementation{{ 's' if impl_total != 1 }} on live systems; the five counts below sum to it</span></header>
+  <section class="kpi-grid kpi-grid--4">
+    {% for w in windows %}
+    <div class="kpi"><span class="kpi__label">{{ w.label }}</span><span class="kpi__value{% if w.key == 'overdue' and impl_counts[w.key] %} kpi__value--danger{% endif %}">{{ impl_counts[w.key] }}</span></div>
+    {% endfor %}
+  </section>
+  {% if impl_rows %}
+  <div class="table-wrap"><table>
+    <thead><tr><th>Control</th><th>System</th><th>Window</th><th>Next assessment due</th><th>Last assessed</th><th>ConMon frequency</th></tr></thead>
+    <tbody>{% for row in impl_rows %}{% set i = row.impl %}<tr>
+      <td class="mono">{{ row.control }}</td>
+      <td>{{ row.system }}</td>
+      <td><span class="chip {% if row.window == 'overdue' %}chip--err{% elif row.window == 'due_30' %}chip--warn{% else %}chip--ghost{% endif %}">{% for w in windows %}{% if w.key == row.window %}{{ w.label }}{% endif %}{% endfor %}</span></td>
+      <td><span class="{% if row.window == 'overdue' %}kanban__due--late{% endif %}">{{ i.next_assessment_due }}</span></td>
+      <td>{{ i.last_assessed_on or '—' }}</td>
+      <td>{{ i.conmon_frequency or '—' }}</td>
+    </tr>{% endfor %}</tbody>
+  </table></div>
+  {% if impl_listed_total > impl_rows | length %}<p class="panel__note">Showing the first {{ impl_rows | length }} of {{ impl_listed_total }} implementations due within 90 days or overdue.</p>{% endif %}
+  {% elif impl_total %}
+  <p class="panel__empty">No implementation is overdue or due within 90 days.{% if impl_counts.unscheduled %} {{ impl_counts.unscheduled }} ha{{ 've' if impl_counts.unscheduled != 1 else 's' }} no assessment date recorded.{% endif %}</p>
+  {% else %}
+  <p class="panel__empty">No control implementation is recorded on this organization's live systems. Implementations come from a system's SSP; set a next assessment date on each to schedule it.</p>
+  {% endif %}
+</article>
+
+<article class="card panel">
+  <header class="panel__head"><h2 class="panel__title">Control tests by frequency and last run</h2>
+    <span class="panel__hint">{{ tests_total }} active test{{ 's' if tests_total != 1 }} on live systems</span></header>
+  {% if tests_by_frequency %}
+  <div class="table-wrap"><table>
+    <thead><tr><th>Frequency</th><th>Due now</th><th>Never run</th><th>Scheduled</th><th>No schedule</th></tr></thead>
+    <tbody>{% for freq, c in tests_by_frequency.items() %}<tr>
+      <td>{{ 'none set' if freq == 'none' else freq }}</td>
+      <td>{{ c.get('due', 0) }}</td><td>{{ c.get('never_run', 0) }}</td><td>{{ c.get('scheduled', 0) }}</td><td>{{ c.get('no_schedule', 0) }}</td>
+    </tr>{% endfor %}</tbody>
+  </table></div>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Test</th><th>Control</th><th>System</th><th>Frequency</th><th>Last run</th><th>Last result</th><th>Next run</th></tr></thead>
+    <tbody>{% for row in tests %}{% set t = row.t %}<tr>
+      <td><a href="/control-tests/{{ t.id }}">{{ t.name }}</a></td>
+      <td class="mono">{{ t.control_id }}</td>
+      <td>{{ row.system }}</td>
+      <td>{{ t.frequency or '—' }}</td>
+      <td>{{ t.last_tested_at.strftime('%Y-%m-%d') if t.last_tested_at else '—' }}</td>
+      <td>{{ (t.last_status or '—') | replace('_',' ') }}</td>
+      <td>{% if row.state == 'due' %}<span class="chip chip--warn">due since {{ row.next_due }}</span>{% elif row.state == 'never_run' %}<span class="chip chip--warn">never run</span>{% elif row.state == 'scheduled' %}{{ row.next_due }}{% else %}<span class="dim">no schedule</span>{% endif %}</td>
+    </tr>{% endfor %}</tbody>
+  </table></div>
+  {% if tests_total > tests | length %}<p class="panel__note">Showing the first {{ tests | length }} of {{ tests_total }} tests.</p>{% endif %}
+  {% else %}
+  <p class="panel__empty">No active control test is defined on this organization's live systems. Tests are defined on <a href="/control-tests">Control Effectiveness</a>; give each a frequency to schedule it.</p>
+  {% endif %}
+</article>
+{% endblock %}

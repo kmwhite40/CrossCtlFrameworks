@@ -30,6 +30,10 @@ class EvidenceError(ValueError):
     """Raised on an invalid evidence-repository operation (e.g. locked object)."""
 
 
+class EvidenceSeparationError(EvidenceError):
+    """The reviewer is the person who uploaded the version under review."""
+
+
 class EvidenceIntegrityError(EvidenceError):
     """Raised when stored evidence bytes fail SHA-256 verification against the
     digest recorded at upload time (IA-07: tampered or corrupted blob detected
@@ -46,6 +50,24 @@ class EvidenceContentMissingError(EvidenceError):
     """
 
 
+async def _emit(session: AsyncSession, obj: EvidenceObject, verb: str, summary: str) -> None:
+    """The assurance graph draws every evidence object with its status, so a
+    new object, or a status change, is news to it. Each writer below emits only
+    when it made one; the object's own organization, never the caller's."""
+    from ..governance import bus  # noqa: PLC0415 -- avoid an import cycle
+
+    await bus.emit(
+        session,
+        verb=verb,
+        entity_type="evidence_object",
+        entity_id=obj.id,
+        summary=summary,
+        org_id=obj.organization_id,
+        payload={"status": obj.status}
+        | ({"system_id": obj.system_id} if obj.system_id is not None else {}),
+    )
+
+
 async def create_object(
     session: AsyncSession,
     *,
@@ -59,7 +81,10 @@ async def create_object(
     owner: str | None = None,
     source_type: str = "manual_upload",
     expires_on: date | None = None,
+    announce: bool = True,
 ) -> EvidenceObject:
+    """Create a draft evidence object. ``announce=False`` is for a bulk writer
+    that emits one summary event for the batch itself (it must)."""
     obj = EvidenceObject(
         organization_id=org_id,
         title=title,
@@ -75,6 +100,8 @@ async def create_object(
     )
     session.add(obj)
     await session.flush()
+    if announce:
+        await _emit(session, obj, "created", f"Evidence object '{obj.title}' created")
     return obj
 
 
@@ -153,17 +180,23 @@ async def add_version(
     session.add(version)
     await session.flush()
     obj.current_version_id = version.id
-    # A new version reopens review unless the object was already terminal.
-    if obj.status in ("approved", "rejected", "expired"):
+    # A new version reopens review. That includes "submitted": otherwise the
+    # uploader could swap the content after submitting, and the reviewer would
+    # approve -- and WORM-lock -- a version they were never shown.
+    if obj.status in ("submitted", "approved", "rejected", "expired"):
         obj.status = "draft"
+        await _emit(session, obj, "updated", f"Evidence object '{obj.title}' reopened for review")
     return version
 
 
 async def submit_object(session: AsyncSession, obj: EvidenceObject) -> EvidenceObject:
     if obj.current_version_id is None:
         raise EvidenceError("cannot submit evidence with no versions")
+    changed = obj.status != "submitted"
     obj.status = "submitted"
     await session.flush()
+    if changed:
+        await _emit(session, obj, "updated", f"Evidence object '{obj.title}' submitted")
     return obj
 
 
@@ -177,6 +210,15 @@ async def review_object(
 ) -> EvidenceReview:
     if decision not in ("approved", "rejected"):
         raise EvidenceError("decision must be 'approved' or 'rejected'")
+    # Only what was put forward is reviewed. Approving a draft froze it (WORM)
+    # before anyone had said it was ready.
+    if obj.status != "submitted":
+        raise EvidenceError(f"only submitted evidence can be reviewed (status is {obj.status})")
+    # Separation of duties, when there is more than one principal to separate.
+    if get_settings().auth_enabled and reviewer is not None:
+        version = await session.get(EvidenceVersion, obj.current_version_id)
+        if version is not None and version.uploaded_by == reviewer:
+            raise EvidenceSeparationError("the uploader of this version cannot review it")
     review = EvidenceReview(
         evidence_object_id=obj.id,
         version_id=obj.current_version_id,
@@ -189,6 +231,7 @@ async def review_object(
     if decision == "approved":
         obj.immutable_lock = True  # WORM: approved evidence is frozen
     await session.flush()
+    await _emit(session, obj, "updated", f"Evidence object '{obj.title}' {decision}")
     return review
 
 
@@ -244,12 +287,23 @@ async def expired_objects(
 
 
 async def mark_expired(
-    session: AsyncSession, *, org_id: int | None = None, today: date | None = None
+    session: AsyncSession,
+    *,
+    org_id: int | None = None,
+    today: date | None = None,
+    unowned: bool = False,
 ) -> int:
-    """Flip past-freshness objects to ``expired`` (unless already terminal). Count."""
+    """Flip past-freshness objects to ``expired`` (unless already terminal). Count.
+
+    ``unowned=True`` targets only rows with no organization (single-operator
+    mode stores evidence that way), which a per-org pass never reaches.
+    """
     today = today or datetime.now(UTC).date()
     n = 0
-    for obj in await expired_objects(session, org_id=org_id, today=today):
+    objs = await expired_objects(session, org_id=org_id, today=today)
+    if unowned:
+        objs = [o for o in objs if o.organization_id is None]
+    for obj in objs:
         if obj.status != "expired":
             obj.status = "expired"
             n += 1

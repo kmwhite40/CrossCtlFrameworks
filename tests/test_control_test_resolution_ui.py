@@ -367,7 +367,7 @@ async def test_the_gap_dashboard_renders_an_accepted_row() -> None:
     """
     sc = await _scene()
     async with _client() as c:
-        before = await c.get("/dashboard", headers=_auth(str(sc["ao"])))
+        before = await c.get("/gaps", headers=_auth(str(sc["ao"])))
         assert before.status_code == 200, before.text
         # One failing control, none accepted: the open KPI must render "1".
         assert '>1</div>' in before.text, "the open-gap count rendered empty"
@@ -385,7 +385,7 @@ async def test_the_gap_dashboard_renders_an_accepted_row() -> None:
             headers=_auth(str(sc["ao"])),
             follow_redirects=False,
         )
-        after = await c.get("/dashboard", headers=_auth(str(sc["ao"])))
+        after = await c.get("/gaps", headers=_auth(str(sc["ao"])))
 
     assert after.status_code == 200, after.text
     assert ">0</div>" in after.text, "the open count did not fall to zero"

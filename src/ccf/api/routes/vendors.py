@@ -93,7 +93,7 @@ async def create_vendor(
         entity_type="vendor",
         entity_id=v.id,
         summary=f"Vendor onboarded: {v.name}",
-        org_id=principal.org_id,
+        org_id=v.organization_id,  # the vendor's own, as the record is
         actor=principal.email,
     )
     await session.commit()

@@ -21,13 +21,16 @@ from sqlalchemy.orm import selectinload
 from ... import mfa, onboarding
 from ...ai_actions.provenance import ai_written_poam_ids
 from ...analytics import org_summary
+from ...analytics.posture import org_system_subq
 from ...assessment import FINDINGS, seed_assessment_results, summarize_results
+from ...assessment.findings import objective_finding_options
 from ...auth import Principal, sign_session
 from ...capability import divergence
 from ...config import get_settings, is_dev_env
-from ...constants import POAM_ACTIVE_STATUSES
+from ...constants import POAM_ACTIVE_STATUSES, SSP_APPROVED_STATUSES, SSP_AUTHOR_STATUSES
 from ...fedramp20x import cr26_display_label
 from ...governance import automation as automation_engine
+from ...governance import bus
 from ...governance import conmon as conmon_engine
 from ...governance import digest as digest_engine
 from ...identity import mfa_service
@@ -49,7 +52,6 @@ from ...models import (
     IngestionRun,
     Interconnection,
     InventoryItem,
-    Notification,
     Organization,
     Policy,
     RejectedRow,
@@ -69,7 +71,6 @@ from ...models import (
     Worksheet,
     WorksheetRow,
 )
-from ...models_assessment_engine import OBJECTIVE_VERDICTS
 from ...models_grc import ConnectorConfig, ControlTest, ControlTestResult, ExternalIssueLink
 from ...onboarding import onboarding_state
 from ...posture.latest import latest_result_ids
@@ -87,6 +88,7 @@ from ...ssp.platforms import (
 )
 from ...ssp.seed import seed_80053_project, seed_project_entries
 from ...ssp.statements import is_draft_narrative
+from .. import navigation
 from ..audit import record_event
 from ..auth_deps import (
     MFA_PENDING_COOKIE,
@@ -107,6 +109,7 @@ from ..login_service import (
     record_failed_factor,
     revoke_sessions_for_request,
 )
+from .assessments import require_independent_recorder
 from .diff import diff_workbook
 from .scoring import compute_summary
 from .ssp import FRAMEWORKS, require_platform
@@ -138,6 +141,25 @@ def _asset_version() -> str:
 # Inject settings.readonly + an asset-version token into every template's globals.
 templates.env.globals["settings"] = get_settings()
 templates.env.globals["asset_v"] = _asset_version()
+
+
+def _shell_principal(request: Request | None) -> Any:
+    """The signed-in user the chrome names, or None (auth off / anonymous).
+
+    Read for display only: no authorization decision consults a template."""
+    if request is None:
+        return None
+    principal = getattr(request.state, "principal", None)
+    return principal if getattr(principal, "user_id", None) is not None else None
+
+
+# The information architecture (ccf/api/navigation.py) for the shell.
+templates.env.globals["nav"] = navigation.NAV
+templates.env.globals["nav_pinned"] = navigation.PINNED
+templates.env.globals["nav_locate"] = navigation.locate
+templates.env.globals["nav_palette"] = navigation.palette_entries
+templates.env.globals["shell_principal"] = _shell_principal
+templates.env.globals["nav_visible"] = navigation.visible_to
 
 router = APIRouter(include_in_schema=False)
 
@@ -188,6 +210,27 @@ def _principal_org(request: Request) -> int | None:
     return getattr(principal, "org_id", None) if principal is not None else None
 
 
+def _actor_email(request: Request) -> str | None:
+    """The signed-in principal's email, for an event's ``actor`` (None when auth is off)."""
+    return getattr(getattr(request.state, "principal", None), "email", None)
+
+
+def no_org_page(request: Request, active: str) -> HTMLResponse:
+    """The page an unscoped session gets instead of totals added up across
+    every tenant (``command_center`` and ``ui_history`` take the same stance).
+
+    ``active`` is the navigation key: the heading is that entry's label, so
+    the page and the rail cannot name it differently."""
+    from .. import navigation  # noqa: PLC0415
+
+    _, item = navigation.locate(active)
+    return templates.TemplateResponse(
+        request,
+        "no_org.html",
+        {"active": active, "page_title": item.label if item else "This page"},
+    )
+
+
 async def _scoped_project(
     session: AsyncSession, project_id: int, org: int | None
 ) -> SSPProject | None:
@@ -208,17 +251,46 @@ async def landing(request: Request) -> HTMLResponse:
 
 @router.get("/dashboard", response_class=HTMLResponse)
 async def home(request: Request, session: AsyncSession = Depends(get_session)) -> HTMLResponse:
-    """What this organization has to fix, first thing on sign-in.
+    """The executive command center: posture, risk, remediation and activity.
+
+    Composes recorded data only (``analytics.command_center``); nothing on the
+    page is computed for display alone. "What is broken" -- the view this
+    route used to serve -- is at ``/gaps``, one click away from the headline
+    figure, and the operational overview is at ``/operations``.
+    """
+    from ...analytics.command_center import command_center  # noqa: PLC0415
+
+    org = _principal_org(request)
+    principal = getattr(request.state, "principal", None)
+    email = getattr(principal, "email", None) or ""
+    org_name = None
+    if org is not None:
+        org_name = (
+            await session.execute(select(Organization.name).where(Organization.id == org))
+        ).scalar_one_or_none()
+    return templates.TemplateResponse(
+        request,
+        "command_center.html",
+        {
+            "active": "dashboard",
+            "cc": await command_center(session, org),
+            "org_name": org_name,
+            # A display name from the address only; nothing is inferred from it.
+            "first_name": email.split("@")[0].split(".")[0].capitalize() if email else "",
+            "asset_v": _asset_version(),
+        },
+    )
+
+
+@router.get("/gaps", response_class=HTMLResponse)
+async def gaps_page(request: Request, session: AsyncSession = Depends(get_session)) -> HTMLResponse:
+    """What this organization has to fix: every assessed control, failures first.
 
     Everything shown here was already recorded -- a scan writes a control test
     per check, a result per test, and a finding per resource -- but the answer
     was spread across `/control-tests`, `/posture`, `/governance` and `/poams`
-    with no page rolling it up. The most important view should not be
-    something you navigate to.
-
-    The operational overview this page used to show is still at
-    `/operations`; it answers a different question (how the programme is
-    running) from the one someone signing in asks first (what is broken).
+    with no page rolling it up. This was `/dashboard` until the command center
+    took that address; the command center's headline figure links here.
     """
     from ...analytics.gaps import compliance_gaps  # noqa: PLC0415
 
@@ -226,7 +298,7 @@ async def home(request: Request, session: AsyncSession = Depends(get_session)) -
         request,
         "dashboard_gaps.html",
         {
-            "active": "dashboard",
+            "active": "gaps",
             "g": await compliance_gaps(session, _principal_org(request)),
             "asset_v": _asset_version(),
         },
@@ -266,7 +338,7 @@ async def operations(
         request,
         "dashboard.html",
         {
-            "active": "dashboard",
+            "active": "operations",
             "overview": overview,
             "asset_v": _asset_version(),
         },
@@ -584,13 +656,23 @@ async def create_system(
     # organization does not depend on an unrelated form field being filled in.
     org_id = resolve_caller_org(_principal_org(request), organization_id)
     if name.strip():
-        session.add(
-            System(
-                organization_id=org_id,
-                name=name.strip(),
-                description=(description or None),
-                baseline=(baseline or None),
-            )
+        obj = System(
+            organization_id=org_id,
+            name=name.strip(),
+            description=(description or None),
+            baseline=(baseline or None),
+        )
+        session.add(obj)
+        await session.flush()
+        # The API's event: the graph draws every system (and webhooks hear it).
+        await bus.emit(
+            session,
+            verb="created",
+            entity_type="system",
+            entity_id=obj.id,
+            summary=f"System {obj.name} created",
+            org_id=obj.organization_id,
+            actor=_actor_email(request),
         )
         await session.commit()
     return RedirectResponse("/systems", status_code=303)
@@ -612,6 +694,16 @@ async def delete_system_ui(
         # DATA-04: soft-delete only — a hard DELETE here would CASCADE away
         # the system's POA&Ms/assessments/evidence/implementations/risks.
         sys.deleted_at = datetime.now(UTC)
+        await bus.emit(
+            session,
+            verb="deleted",
+            entity_type="system",
+            entity_id=sys.id,
+            summary=f"System {sys.name} deleted",
+            org_id=sys.organization_id,
+            actor=_actor_email(request),
+            payload={"hard": False},
+        )
         await session.commit()
     return RedirectResponse("/systems", status_code=303)
 
@@ -631,10 +723,10 @@ async def poams_page(
         .options(selectinload(POAM.milestones))
         .order_by(POAM.due_on.nulls_last(), POAM.id.desc())
     )
-    if org is not None:
-        stmt = stmt.where(
-            POAM.system_id.in_(select(System.id).where(System.organization_id == org))
-        )
+    # Live systems only, scoped or not: a deleted system's POA&Ms were counted
+    # here (41 open) while the command center and posture said 37 -- the same
+    # organization, two numbers. org_system_subq is the one definition.
+    stmt = stmt.where(POAM.system_id.in_(org_system_subq(org)))
     if status:
         stmt = stmt.where(POAM.status == status)
     if severity:
@@ -1213,23 +1305,60 @@ async def system_live_audit_open_poam(
 async def risks_page(
     request: Request,
     session: AsyncSession = Depends(get_session),
+    register: str | None = Query(None),
 ) -> HTMLResponse:
+    """The register: enterprise and cyber risks are two registers over one
+    table (``Risk.register``, 0100); ``?register=`` picks one, none lists both.
+
+    Scoped by ``governance.risk.risk_in_scope``: risks on the organization's
+    live systems and system-less (enterprise) risks it owns; never a risk on a
+    soft-deleted system."""
+    from ...governance.risk import (  # noqa: PLC0415
+        IMPACT_LABELS,
+        LIKELIHOOD_LABELS,
+        SCALE,
+        appetite_placements,
+        band,
+        effective_scores,
+        risk_in_scope,
+    )
+
     org = _principal_org(request)
-    risk_stmt = select(Risk).order_by(Risk.created_at.desc())
+    if register not in ("enterprise", "cyber"):
+        register = None
+    risk_stmt = (
+        select(Risk, System.name.label("system"))
+        .outerjoin(System, System.id == Risk.system_id)
+        .where(risk_in_scope(org))
+        .order_by(Risk.created_at.desc())
+    )
+    if register is not None:
+        risk_stmt = risk_stmt.where(Risk.register == register)
     sys_stmt = select(System).where(System.deleted_at.is_(None)).order_by(System.name)
     if org is not None:
-        org_systems = select(System.id).where(System.organization_id == org)
-        risk_stmt = risk_stmt.where(Risk.system_id.in_(org_systems))
         sys_stmt = sys_stmt.where(System.organization_id == org)
-    rows = (await session.execute(risk_stmt)).scalars().all()
+    rows = (await session.execute(risk_stmt)).all()
     systems = (await session.execute(sys_stmt)).scalars().all()
+    placements = (
+        await appetite_placements(session, org, risk_ids=[r.Risk.id for r in rows])
+        if org is not None
+        else {}
+    )
     return templates.TemplateResponse(
         request,
         "risks.html",
         {
-            "active": "risks",
+            "active": "risks_cyber" if register == "cyber" else "risks",
+            "register": register,
             "rows": rows,
             "systems": systems,
+            "scale": SCALE,
+            "lk_labels": LIKELIHOOD_LABELS,
+            "im_labels": IMPACT_LABELS,
+            "effective": effective_scores,
+            "band": band,
+            "placements": placements,
+            "scoped": org is not None,
         },
     )
 
@@ -1639,6 +1768,15 @@ async def scoring_create_system(
         sysm = System(organization_id=org.id, name=sys_name, baseline=(baseline or None))
         session.add(sysm)
         await session.flush()
+        await bus.emit(
+            session,
+            verb="created",
+            entity_type="system",
+            entity_id=sysm.id,
+            summary=f"System {sysm.name} created",
+            org_id=sysm.organization_id,
+            actor=_actor_email(request),
+        )
     sid = sysm.id
     await session.commit()
     return RedirectResponse(f"/scoring?system_id={sid}", status_code=303)
@@ -1813,6 +1951,8 @@ async def ssp_detail(
         {
             "active": "ssp",
             "project": proj,
+            "author_statuses": SSP_AUTHOR_STATUSES,
+            "approved_statuses": SSP_APPROVED_STATUSES,
             "by_domain": by_domain,
             "ordered_domains": ordered,
             "domain_name": ssp_constants.domain_name,
@@ -1858,7 +1998,11 @@ async def ssp_save_meta(
         proj.system_name = system_name or None
         proj.prepared_by = prepared_by or None
         proj.version = version or "0.1"
-        proj.status = status or "draft"
+        # An approved plan keeps its approval: the form has no status control
+        # for one, and the decision is a reviewer's, not the author's. Anything
+        # outside the author vocabulary is ignored rather than stored.
+        if proj.status not in SSP_APPROVED_STATUSES and status in SSP_AUTHOR_STATUSES:
+            proj.status = status
         if document_date:
             with contextlib.suppress(ValueError):
                 proj.document_date = date.fromisoformat(document_date)
@@ -2073,17 +2217,16 @@ async def governance_page(
         for test, result in scan_attention
         if f"ctltest-fix:{test.id}" not in represented_task_keys
     ][:25]
-    notifs = (
-        (
-            await session.execute(
-                _scoped(select(Notification), Notification.organization_id)
-                .order_by(Notification.created_at.desc())
-                .limit(25)
-            )
-        )
-        .scalars()
-        .all()
+    # The caller's inbox and their own read state -- the same definition the
+    # notifications API uses (ccf.governance.inbox).
+    from ...auth import SYSTEM_PRINCIPAL  # noqa: PLC0415
+    from ...governance import inbox  # noqa: PLC0415
+
+    viewer_principal = getattr(request.state, "principal", None) or SYSTEM_PRINCIPAL
+    notifs = list(
+        (await session.execute(inbox.visible(viewer_principal).limit(25))).scalars().all()
     )
+    notif_read = await inbox.read_ids(session, viewer_principal, notifs)
     events = (
         (
             await session.execute(
@@ -2116,7 +2259,7 @@ async def governance_page(
             await session.execute(_scoped(select(func.count(Vendor.id)), Vendor.organization_id))
         ).scalar_one(),
         "open_tasks": len(tasks) + len(scan_work_items),
-        "unread_alerts": sum(1 for n in notifs if n.read_at is None),
+        "unread_alerts": await inbox.unread_count(session, viewer_principal),
     }
     # The shared rollup, not a second one computed here. This page divided
     # passing checks by *every* result, while `live_scan_for_org` divides by the
@@ -2153,6 +2296,7 @@ async def governance_page(
             "tasks": tasks,
             "scan_work_items": scan_work_items,
             "notifs": notifs,
+            "notif_read": notif_read,
             "events": events,
             "systems": systems,
             "counts": counts,
@@ -2168,7 +2312,13 @@ async def governance_scan(
     org = _principal_org(request)
     today = datetime.now(UTC).date()
     await conmon_engine.scan(session, today=today, org_id=org)
-    await digest_engine.run(session, today=today, org_id=org)
+    # The same split as POST /api/notifications/scan: an org's own alerts, or --
+    # unscoped -- the platform's plus every organization's. ``run(org_id=None)``
+    # raises platform alerts only, so calling it here dropped every org alert.
+    if org is not None:
+        await digest_engine.run(session, today=today, org_id=org)
+    else:
+        await digest_engine.run_all(session, today=today)
     await session.commit()
     return RedirectResponse("/governance", status_code=303)
 
@@ -2461,88 +2611,6 @@ _FINDING_META = [
     ("not_applicable", "N/A", "chip--info"),
 ]
 
-# ---------------------------------------------------------------------------
-# Objective-grain finding vocabulary -- the per-objective <select> on the
-# assessor form. DISTINCT from _FINDING_META above, which is control grain and
-# deliberately unchanged.
-#
-# ``AssessmentControlResult.objective_findings`` has TWO producers with two
-# vocabularies: the seeder and this form write ``ccf.assessment.seed.FINDINGS``;
-# the assessment engine writes ``ccf.models_assessment_engine
-# .OBJECTIVE_VERDICTS`` into the same JSONB on acceptance (see
-# ``ccf.assessment.engine.service._objective_finding_record``). The select was
-# built from the first list alone, so an objective holding ``not_satisfied`` or
-# ``insufficient_evidence`` rendered with NO matching <option>; a browser then
-# submits the first one, and the next save wrote ``not_assessed`` over it. A
-# real failure, or a real "the evidence did not settle this", downgraded to
-# "nobody looked" by an assessor merely opening the page and pressing Save --
-# and since the SAR is built at objective grain (``oscal.build_sar_doc``) that
-# value reaches the artifact an assessor ingests.
-#
-# The list is the UNION of the two constants, DERIVED from them rather than
-# restated, so a future member of either is offered here without a second edit.
-#
-# BOTH failure spellings are offered, deliberately. They are one determination
-# in two standards' words -- ``constants._FINDING_ALIASES`` maps
-# ``not_satisfied`` onto ``OTHER_THAN_SATISFIED``, and nothing downstream
-# branches on which spelling was stored. Offering only one was considered and
-# rejected twice over: it makes the other unrepresentable, which is precisely
-# the defect being fixed, and a row-dependent list (show the stored spelling
-# only) would leave an assessor unable to record ``not_satisfied`` on an
-# objective currently ``satisfied`` while the engine records exactly that on
-# the objective beside it. The labels name the standard, so the choice is
-# informed rather than a coin toss.
-#
-# ``insufficient_evidence`` and ``not_assessed`` are NOT merged, although both
-# canonicalize to NOT_ASSESSED (``constants._FINDING_ALIASES``): one means the
-# evidence was examined and did not settle the question, the other that nobody
-# looked. The OSCAL layer keeps them apart with a ``determination`` prop, and
-# the form an assessor types into must be able to say each.
-_OBJECTIVE_FINDING_DISPLAY: dict[str, tuple[str, str]] = {
-    "not_assessed": ("Not assessed", "chip--ghost"),
-    "satisfied": ("Satisfied", "chip--ok"),
-    "other_than_satisfied": ("Other than satisfied (800-171A)", "chip--err"),
-    "not_satisfied": ("Not satisfied (800-53A)", "chip--err"),
-    "insufficient_evidence": ("Insufficient evidence", "chip--warn"),
-    "not_applicable": ("N/A", "chip--info"),
-}
-
-#: Both producers' vocabularies, deduplicated in first-seen order.
-_OBJECTIVE_FINDINGS: tuple[str, ...] = tuple(dict.fromkeys((*FINDINGS, *OBJECTIVE_VERDICTS)))
-
-
-def _objective_finding_option(key: str) -> tuple[str, str, str]:
-    """One <option>. An unlisted key still gets a readable label, never a
-    blank one -- a nameless determination beside an objective is worse than an
-    ugly one."""
-    label, cls = _OBJECTIVE_FINDING_DISPLAY.get(key, (key.replace("_", " "), "chip--ghost"))
-    return key, label, cls
-
-
-def objective_finding_options(stored: str | None) -> list[tuple[str, str, str]]:
-    """The options one objective's <select> renders, given what the row holds.
-
-    ``_OBJECTIVE_FINDINGS`` plus ``stored`` itself whenever it falls outside
-    it. The column is free JSONB with no DB constraint, so "outside it" is
-    reachable -- a legacy import, or a producer added after this list -- and
-    appending it is what makes the rendered select able to represent EVERY
-    value the data can actually hold, not merely the two vocabularies known
-    today. The stored value is therefore ALWAYS selectable, so a select nobody
-    touched always submits back exactly what it was rendered from. That
-    property, not the width of the list, is what stops a save from rewriting a
-    finding the assessor never looked at.
-
-    ``assessment_save_result`` builds its accept-list from this same function,
-    so the page and the handler cannot drift into disagreeing about what was
-    offerable -- the drift that caused the original defect.
-    """
-    key = stored or "not_assessed"
-    options = [_objective_finding_option(k) for k in _OBJECTIVE_FINDINGS]
-    if key not in _OBJECTIVE_FINDINGS:
-        options.append((key, f"{key} (as recorded)", "chip--ghost"))
-    return options
-
-
 @router.get("/assessments", response_class=HTMLResponse)
 async def assessments_page(
     request: Request, session: AsyncSession = Depends(get_session)
@@ -2689,9 +2757,12 @@ async def assessment_save_result(
     assessor_note: str = Form(""),
     evidence_ref: str = Form(""),
     session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(get_principal),
 ) -> HTMLResponse:
-    if await _scoped_assessment(session, assessment_id, _principal_org(request)) is None:
+    assessment = await _scoped_assessment(session, assessment_id, _principal_org(request))
+    if assessment is None:
         raise HTTPException(404, "assessment not found")
+    require_independent_recorder(assessment, principal)
     result = (
         await session.execute(
             select(AssessmentControlResult)
@@ -2795,18 +2866,28 @@ async def assessment_make_poams_ui(
             title = f"{r.control_id} — {r.title or 'Other than satisfied'}"
             if title in existing:
                 continue
-            session.add(
-                POAM(
-                    system_id=a.system_id,
-                    title=title,
-                    weakness=(
-                        f"Practice {r.control_id} ({r.nist_id}) assessed Other Than Satisfied. "
-                        f"{r.assessor_note or ''}"
-                    ).strip(),
-                    severity="moderate",
-                    status="open",
-                    identified_on=today,
-                )
+            poam = POAM(
+                system_id=a.system_id,
+                title=title,
+                weakness=(
+                    f"Practice {r.control_id} ({r.nist_id}) assessed Other Than Satisfied. "
+                    f"{r.assessor_note or ''}"
+                ).strip(),
+                severity="moderate",
+                status="open",
+                identified_on=today,
+            )
+            session.add(poam)
+            await session.flush()
+            await bus.emit(
+                session,
+                verb="created",
+                entity_type="poam",
+                entity_id=poam.id,
+                summary=f"POA&M opened from assessment finding: {poam.title}",
+                org_id=await bus.system_org(session, a.system_id),
+                actor=getattr(getattr(request.state, "principal", None), "email", None),
+                payload={"system_id": a.system_id},
             )
         await session.commit()
     return RedirectResponse(f"/assessments/{assessment_id}", status_code=303)
@@ -2824,7 +2905,10 @@ async def fedramp20x_page(
     system_id: int | None = None,
 ) -> HTMLResponse:
     from ...fedramp20x import catalog as ksi_catalog  # noqa: PLC0415
+    from ...fedramp20x import frr_scope, marketplace  # noqa: PLC0415
     from ...fedramp20x import readiness as ksi_readiness  # noqa: PLC0415
+    from ...fedramp20x.applicability import system_scope  # noqa: PLC0415
+    from ...fedramp20x.rules import load_rules  # noqa: PLC0415
     from ...models import (  # noqa: PLC0415
         KSI,
         FedRAMP20xProfile,
@@ -2852,8 +2936,23 @@ async def fedramp20x_page(
     dependencies: list[FedRAMPDependency] = []
     exceptions: list[KSIException] = []
     ksi_names: dict[int, str] = {k.id: k.identifier for k in ksis}
+    applicability: dict[int, str] = {}
+    dep_marketplace: dict[int, dict[str, Any]] = {}
+    requirements: dict[str, Any] | None = None
     if system_id is not None:
         readiness = await ksi_readiness.score_system(session, system_id=system_id, persist=False)
+        scope = await system_scope(session, system_id)
+        applicability = {k.id: scope.status(k.identifier) for k in ksis}
+        system_row = await session.get(System, system_id)
+        if system_row is not None:
+            requirements = frr_scope.scope(
+                load_rules(), system_row.certification_class, system_row.certification_path
+            )
+            counts: dict[str, int] = {}
+            for r in requirements["owed"]:
+                key = r["force"] or "unstated"
+                counts[key] = counts.get(key, 0) + 1
+            requirements["by_force"] = sorted(counts.items(), key=lambda kv: -kv[1])
         for s in (
             await session.execute(select(KSIState).where(KSIState.system_id == system_id))
         ).scalars():
@@ -2873,11 +2972,23 @@ async def fedramp20x_page(
             .scalars()
             .all()
         )
+        products = await marketplace.products_by_id(
+            session, {d.marketplace_id for d in dependencies if d.marketplace_id}
+        )
+        for d in dependencies:
+            product = products.get(d.marketplace_id or "")
+            dep_marketplace[d.id] = {
+                "product": marketplace.product_out(product) if product else None,
+                "findings": [f.as_dict() for f in marketplace.compare(d, product)],
+            }
         exceptions = list(
             (
                 await session.execute(
                     select(KSIException)
-                    .where(KSIException.system_id == system_id)
+                    .where(
+                        KSIException.system_id == system_id,
+                        KSIException.ksi_id.in_(ksi_catalog.current_ksi_ids()),
+                    )
                     .order_by(KSIException.created_at.desc())
                 )
             )
@@ -2894,6 +3005,7 @@ async def fedramp20x_page(
             "ksi_total": len(ksis),
             "ksis": ksis,
             "ksi_names": ksi_names,
+            "applicability": applicability,
             "systems": systems,
             "system_id": system_id,
             "readiness": readiness,
@@ -2901,6 +3013,11 @@ async def fedramp20x_page(
             "assessor": assessor,
             "profile": profile,
             "dependencies": dependencies,
+            "dep_marketplace": dep_marketplace,
+            "requirements": requirements,
+            # The seed endpoint needs an unscoped principal; a tenant user's
+            # click was a silent 403, so they get the CLI command instead.
+            "can_seed": getattr(getattr(request.state, "principal", None), "is_global", True),
             "exceptions": exceptions,
         },
     )
@@ -2929,15 +3046,32 @@ async def fedramp20x_save_profile(
             select(FedRAMP20xProfile).where(FedRAMP20xProfile.system_id == system_id)
         )
     ).scalar_one_or_none()
+    created = profile is None
     if profile is None:
         profile = FedRAMP20xProfile(system_id=system_id)
         session.add(profile)
-    profile.service_name = service_name.strip() or None
-    profile.deployment_model = deployment_model.strip() or None
-    profile.cloud_environment = cloud_environment.strip() or None
-    profile.boundary_description = boundary_description.strip() or None
-    profile.cryptographic_boundary = cryptographic_boundary.strip() or None
-    profile.logging_boundary = logging_boundary.strip() or None
+    values = {
+        "service_name": service_name.strip() or None,
+        "deployment_model": deployment_model.strip() or None,
+        "cloud_environment": cloud_environment.strip() or None,
+        "boundary_description": boundary_description.strip() or None,
+        "cryptographic_boundary": cryptographic_boundary.strip() or None,
+        "logging_boundary": logging_boundary.strip() or None,
+    }
+    changed = created or any(getattr(profile, k) != v for k, v in values.items())
+    for k, v in values.items():
+        setattr(profile, k, v)
+    if changed:  # a re-save of the same form is not a change (ruling R26)
+        await session.flush()
+        await bus.emit(
+            session,
+            verb="updated",
+            entity_type="fedramp20x_profile",
+            entity_id=system_id,
+            summary=f"20x CSO profile updated for system {system_id}",
+            org_id=await bus.system_org(session, system_id),
+            actor=_actor_email(request),
+        )
     await session.commit()
     return RedirectResponse(f"/fedramp20x?system_id={system_id}", status_code=303)
 
@@ -2958,17 +3092,60 @@ async def fedramp20x_add_dependency(
     from ...models import FedRAMPDependency  # noqa: PLC0415
 
     if name.strip() and await _fedramp20x_system_visible(request, session, system_id):
-        session.add(
-            FedRAMPDependency(
-                system_id=system_id,
-                name=name.strip(),
-                provider=provider.strip() or None,
-                service_type=service_type.strip() or None,
-                fedramp_status=fedramp_status.strip() or "unknown",
-                dependency_risk=dependency_risk.strip() or None,
-            )
+        dep = FedRAMPDependency(
+            system_id=system_id,
+            name=name.strip(),
+            provider=provider.strip() or None,
+            service_type=service_type.strip() or None,
+            fedramp_status=fedramp_status.strip() or "unknown",
+            dependency_risk=dependency_risk.strip() or None,
+        )
+        session.add(dep)
+        await session.flush()
+        await bus.emit(
+            session,
+            verb="created",
+            entity_type="fedramp_dependency",
+            entity_id=dep.id,
+            summary=f"Dependency '{dep.name}' ({dep.fedramp_status})",
+            org_id=await bus.system_org(session, system_id),
+            actor=_actor_email(request),
+            payload={"system_id": system_id},
         )
         await session.commit()
+    return RedirectResponse(f"/fedramp20x?system_id={system_id}", status_code=303)
+
+
+@router.post("/fedramp20x/{system_id}/dependencies/{dependency_id}/marketplace")
+async def fedramp20x_link_marketplace(
+    request: Request,
+    system_id: int,
+    dependency_id: int,
+    *,
+    marketplace_id: str = Form(""),
+    session: AsyncSession = Depends(get_session),
+) -> RedirectResponse:
+    """Link (or, with an empty id, unlink) a dependency -- the API's own path."""
+    from ...fedramp20x import marketplace  # noqa: PLC0415
+    from ...models import FedRAMPDependency  # noqa: PLC0415
+
+    principal = getattr(request.state, "principal", None)
+    if await _fedramp20x_system_visible(request, session, system_id):
+        dep = await session.get(FedRAMPDependency, dependency_id)
+        if dep is not None and dep.system_id == system_id:
+            try:
+                await marketplace.link(
+                    session,
+                    dep,
+                    marketplace_id,
+                    actor=getattr(principal, "email", None),
+                    org_id=getattr(principal, "org_id", None),
+                )
+            except LookupError:
+                # Refused, not stored; the page shows the dependency unchanged.
+                pass
+            else:
+                await session.commit()
     return RedirectResponse(f"/fedramp20x?system_id={system_id}", status_code=303)
 
 
@@ -2982,32 +3159,30 @@ async def fedramp20x_record_review(
     assessor: str = Form(""),
     notes: str = Form(""),
     session: AsyncSession = Depends(get_session),
+    # The same gate as ``POST /api/fedramp/20x/assessor-reviews``. Without it
+    # any signed-in user -- a viewer -- could record an "accepted" 3PAO review
+    # through the form that the API refuses them.
+    principal: Principal = Depends(require_role("admin", "assessor")),
 ) -> RedirectResponse:
-    """Record an assessor review for one KSI and reflect it on the KSI state."""
-    from ...fedramp20x import ASSESSOR_STATUSES  # noqa: PLC0415
-    from ...models import KSIAssessorReview, KSIState  # noqa: PLC0415
+    """Record an assessor review for one KSI -- the same path as the API."""
+    from ...fedramp20x import ASSESSOR_STATUSES, records  # noqa: PLC0415
 
-    if status in ASSESSOR_STATUSES and await _fedramp20x_system_visible(
-        request, session, system_id
+    if (
+        status in ASSESSOR_STATUSES
+        and await _fedramp20x_system_visible(request, session, system_id)
+        and await _ksi_is_current(session, ksi_id)
     ):
-        session.add(
-            KSIAssessorReview(
-                system_id=system_id,
-                ksi_id=ksi_id,
-                assessor=assessor.strip() or None,
-                status=status,
-                notes=notes.strip() or None,
-            )
+        await records.record_review(
+            session,
+            principal=principal,
+            fields={
+                "system_id": system_id,
+                "ksi_id": ksi_id,
+                "assessor": assessor.strip() or None,
+                "status": status,
+                "notes": notes.strip() or None,
+            },
         )
-        state = (
-            await session.execute(
-                select(KSIState).where(
-                    KSIState.system_id == system_id, KSIState.ksi_id == ksi_id
-                )
-            )
-        ).scalar_one_or_none()
-        if state is not None:
-            state.assessor_status = status
         await session.commit()
     return RedirectResponse(f"/fedramp20x?system_id={system_id}", status_code=303)
 
@@ -3021,25 +3196,37 @@ async def fedramp20x_add_exception(
     rationale: str = Form(...),
     status: str = Form("open"),
     session: AsyncSession = Depends(get_session),
+    # The same gate as ``POST /api/fedramp/20x/exceptions``.
+    principal: Principal = Depends(require_role("admin")),
 ) -> RedirectResponse:
-    """Record a KSI exception / deviation for a system."""
-    from ...models import KSIException  # noqa: PLC0415
+    """Record a KSI exception / deviation for a system -- the same path as the API."""
+    from ...fedramp20x import records  # noqa: PLC0415
 
     if (
         rationale.strip()
         and status in ("open", "accepted", "closed")
         and await _fedramp20x_system_visible(request, session, system_id)
+        and await _ksi_is_current(session, ksi_id)
     ):
-        session.add(
-            KSIException(
-                system_id=system_id,
-                ksi_id=ksi_id,
-                rationale=rationale.strip(),
-                status=status,
-            )
+        await records.record_exception(
+            session,
+            principal=principal,
+            system_id=system_id,
+            ksi_id=ksi_id,
+            rationale=rationale.strip(),
+            status=status,
         )
         await session.commit()
     return RedirectResponse(f"/fedramp20x?system_id={system_id}", status_code=303)
+
+
+async def _ksi_is_current(session: AsyncSession, ksi_id: int) -> bool:
+    """A form write may only target a KSI FedRAMP's current rules define."""
+    from ...fedramp20x.catalog import current_ksi_ids  # noqa: PLC0415
+    from ...models import KSI  # noqa: PLC0415
+
+    stmt = current_ksi_ids().where(KSI.id == ksi_id)
+    return (await session.execute(stmt)).first() is not None
 
 
 async def _fedramp20x_system_visible(
@@ -3057,12 +3244,52 @@ async def _fedramp20x_system_visible(
 async def reliability_page(
     request: Request,
     session: AsyncSession = Depends(get_session),
+    _admin: Principal = Depends(require_role("admin")),
 ) -> HTMLResponse:
+    from ...events import retention  # noqa: PLC0415
     from ...reliability import run_checks, summarize  # noqa: PLC0415
 
     summary = summarize(await run_checks(session))
+    org = _principal_org(request)
+    failed_consumers = await retention.failed_counts(session, org_id=org)
     return templates.TemplateResponse(
         request,
         "reliability.html",
-        {"active": "reliability", "asset_v": _asset_version(), "summary": summary},
+        {
+            "active": "reliability",
+            "asset_v": _asset_version(),
+            "summary": summary,
+            "failed_consumers": failed_consumers,
+        },
     )
+
+
+@router.post("/admin/reliability/outbox/{consumer}/requeue")
+async def reliability_outbox_requeue(
+    consumer: str,
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(require_role("admin")),
+) -> RedirectResponse:
+    """Put a consumer's dead-lettered jobs back on the queue.
+
+    A tenant admin requeues only their own organization's jobs (the explicit
+    filter is the guard; RLS is the backstop). An unscoped platform admin
+    requeues every organization's. The prior error is kept in ``result`` so the
+    history of why the job died is not lost, and the action is audited.
+    """
+    from ...events import retention  # noqa: PLC0415
+
+    org = _principal_org(request)
+    requeued = await retention.requeue_failed(session, consumer=consumer, org_id=org)
+    await record_event(
+        session,
+        actor=principal.email,
+        action="outbox.requeue",
+        entity_type="outbox_consumer",
+        entity_id=consumer,
+        diff={"requeued": requeued},
+        organization_id=org,
+    )
+    await session.commit()
+    return RedirectResponse("/admin/reliability", status_code=303)

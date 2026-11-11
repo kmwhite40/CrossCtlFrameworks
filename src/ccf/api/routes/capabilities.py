@@ -27,7 +27,9 @@ from ...auth import Principal
 from ...capability.derive import derive_for_system
 from ...capability.service import capabilities_for_control, framework_reach
 from ...catalog.canonical import canonicalize
-from ...models import Risk, System, SystemComponent
+from ...fedramp20x.catalog import current_ksi_ids
+from ...governance import bus
+from ...models import KSI, Risk, System, SystemComponent
 from ...models_capability import (
     Capability,
     CapabilityComponent,
@@ -199,6 +201,15 @@ async def create_capability(
     )
     session.add(cap)
     await session.flush()
+    await bus.emit(
+        session,
+        verb="created",
+        entity_type="capability",
+        entity_id=cap.id,
+        summary=f"Capability {cap.key} created",
+        org_id=cap.organization_id,
+        actor=principal.email,
+    )
     await session.commit()
     return _out(cap)
 
@@ -223,6 +234,15 @@ async def update_capability(
     cap = await _get_or_404(session, capability_id, principal)
     for field, value in body.model_dump(exclude_unset=True).items():
         setattr(cap, field, value)
+    await bus.emit(
+        session,
+        verb="updated",
+        entity_type="capability",
+        entity_id=cap.id,
+        summary=f"Capability {cap.key} updated",
+        org_id=cap.organization_id,
+        actor=principal.email,
+    )
     await session.commit()
     # `updated_at` carries an onupdate, so the row is stale after commit;
     # refresh explicitly rather than letting serialization trigger a lazy
@@ -238,6 +258,15 @@ async def delete_capability(
     principal: Principal = Depends(get_principal),
 ) -> None:
     cap = await _get_or_404(session, capability_id, principal)
+    await bus.emit(
+        session,
+        verb="deleted",
+        entity_type="capability",
+        entity_id=cap.id,
+        summary=f"Capability {cap.key} deleted",
+        org_id=cap.organization_id,
+        actor=principal.email,
+    )
     await session.delete(cap)  # edges cascade
     await session.commit()
 
@@ -294,8 +323,12 @@ async def _replace_edges(
     org_id: int | None,
     column: str,
     values: list[Any],
+    announce: Any,
 ) -> list[Any]:
-    """Replace one edge collection wholesale; idempotent for the same set."""
+    """Replace one edge collection wholesale; idempotent for the same set.
+
+    ``announce`` emits the change's event, in this transaction (before the
+    commit): each caller passes its own, so the verb stays a literal."""
     await session.execute(delete(model).where(model.capability_id == capability_id))
     unique: list[Any] = []
     for v in values:
@@ -306,6 +339,7 @@ async def _replace_edges(
             model(organization_id=org_id, capability_id=capability_id, **{column: v})
         )
     await session.flush()
+    await announce()
     await session.commit()
     return unique
 
@@ -338,6 +372,15 @@ async def set_controls(
         org_id=cap.organization_id,
         column="control_id",
         values=canonical,
+        announce=lambda: bus.emit(
+            session,
+            verb="controls_set",
+            entity_type="capability",
+            entity_id=cap.id,
+            summary=f"Capability {cap.key} controls replaced",
+            org_id=cap.organization_id,
+            actor=principal.email,
+        ),
     )
     return {"capability_id": cap.id, "control_ids": stored}
 
@@ -358,6 +401,15 @@ async def set_components(
         org_id=cap.organization_id,
         column="component_id",
         values=body.component_ids,
+        announce=lambda: bus.emit(
+            session,
+            verb="components_set",
+            entity_type="capability",
+            entity_id=cap.id,
+            summary=f"Capability {cap.key} components replaced",
+            org_id=cap.organization_id,
+            actor=principal.email,
+        ),
     )
     return {"capability_id": cap.id, "component_ids": stored}
 
@@ -378,6 +430,15 @@ async def set_risks(
         org_id=cap.organization_id,
         column="risk_id",
         values=body.risk_ids,
+        announce=lambda: bus.emit(
+            session,
+            verb="risks_set",
+            entity_type="capability",
+            entity_id=cap.id,
+            summary=f"Capability {cap.key} risks replaced",
+            org_id=cap.organization_id,
+            actor=principal.email,
+        ),
     )
     return {"capability_id": cap.id, "risk_ids": stored}
 
@@ -390,6 +451,21 @@ async def set_ksis(
     principal: Principal = Depends(get_principal),
 ) -> dict[str, Any]:
     cap = await _get_or_404(session, capability_id, principal)
+    # Stored as free strings, so nothing else would stop a typo or a retired
+    # phase-one id becoming an edge to an indicator FedRAMP does not define.
+    current = set(
+        (
+            await session.execute(
+                select(KSI.identifier).where(KSI.id.in_(current_ksi_ids()))
+            )
+        ).scalars()
+    )
+    unknown = sorted({v for v in body.ksi_identifiers if v not in current})
+    if unknown:
+        raise HTTPException(
+            status_code=422,
+            detail=f"not a current FedRAMP KSI: {unknown}",
+        )
     stored = await _replace_edges(
         session,
         model=CapabilityKsi,
@@ -397,6 +473,15 @@ async def set_ksis(
         org_id=cap.organization_id,
         column="ksi_identifier",
         values=body.ksi_identifiers,
+        announce=lambda: bus.emit(
+            session,
+            verb="ksis_set",
+            entity_type="capability",
+            entity_id=cap.id,
+            summary=f"Capability {cap.key} ksis replaced",
+            org_id=cap.organization_id,
+            actor=principal.email,
+        ),
     )
     return {"capability_id": cap.id, "ksi_identifiers": stored}
 

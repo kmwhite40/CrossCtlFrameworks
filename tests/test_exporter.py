@@ -4,13 +4,18 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from ccf.governance.exporter import (
+    _IMPORT_SPEC,
     FORMATS,
     IMPORT_FORMATS,
+    _apply_fields,
     _coerce_date,
     _parse_rows,
     _render,
 )
+from ccf.models import Risk
 
 ROWS = [
     {"id": 1, "title": "Unencrypted backups", "severity": "high", "status": "open"},
@@ -85,3 +90,35 @@ def test_coerce_date_handles_blanks_and_iso() -> None:
     assert _coerce_date("None") is None
     assert _coerce_date("2026-07-01").isoformat() == "2026-07-01"
     assert _coerce_date("2026-07-01T12:00:00").isoformat() == "2026-07-01"
+
+
+# ── risk scores stay in step with levels on import (0099 five-point scale) ──
+
+
+def _risk_spec() -> dict:
+    return next(spec for spec in _IMPORT_SPEC.values() if spec["model"].__name__ == "Risk")
+
+
+def test_an_imported_level_sets_its_score() -> None:
+    r = Risk()
+    _apply_fields(
+        r, {"likelihood": "high", "impact": "moderate", "treatment": "accept"}, _risk_spec()
+    )
+    assert (r.likelihood_score, r.impact_score) == (5, 3)
+    assert (r.inherent_score, r.residual_score) == (15, 15)
+
+
+def test_reimporting_the_same_level_keeps_a_finer_score() -> None:
+    """A risk scored 4 (high) re-imported as 'high' stays 4, not 5."""
+    r = Risk(likelihood="high", likelihood_score=4, impact="low", impact_score=2)
+    _apply_fields(r, {"likelihood": "high", "impact": "low"}, _risk_spec())
+    assert (r.likelihood_score, r.impact_score) == (4, 2)
+    assert r.inherent_score == 8
+
+
+def test_an_imported_score_sets_its_level_and_a_contradiction_is_refused() -> None:
+    r = Risk()
+    _apply_fields(r, {"likelihood_score": "2", "impact_score": 4}, _risk_spec())
+    assert (r.likelihood, r.impact) == ("low", "high")
+    with pytest.raises(ValueError):
+        _apply_fields(Risk(), {"likelihood": "high", "likelihood_score": "2"}, _risk_spec())

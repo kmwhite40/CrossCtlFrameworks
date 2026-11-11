@@ -5,7 +5,7 @@ from __future__ import annotations
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import Field
+from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -64,6 +64,15 @@ class Settings(BaseSettings):
     aws_region: str = Field(default="us-gov-west-1")  # GovCloud West by default
     aws_profile: str | None = Field(default=None)  # named AWS profile (optional)
     aws_capture_enabled: bool = Field(default=False)
+    # The broker identity Concord assumes customer roles *from*, per partition
+    # (``ccf.connectors.aws_identity``). A named profile on this host -- which
+    # may itself be an instance/task role or web identity -- plus that
+    # identity's ARN, shown to customers in the trust policy they attach. No
+    # cross-partition fallback: an unset partition cannot assume roles at all.
+    aws_broker_profile_govcloud: str | None = Field(default=None)
+    aws_broker_arn_govcloud: str | None = Field(default=None)
+    aws_broker_profile_commercial: str | None = Field(default=None)
+    aws_broker_arn_commercial: str | None = Field(default=None)
     # Azure Resource Manager (infrastructure config capture). Defaults target
     # Azure Government (management.usgovcloudapi.net / login.microsoftonline.us).
     # Deliberately NO ``azure_capture_enabled`` opt-in, matching Graph rather
@@ -79,6 +88,14 @@ class Settings(BaseSettings):
     # In-app automation scheduler. When enabled, background jobs run the catalog
     # poll, ConMon scan, alert digest, and connector collection on a cadence.
     scheduler_enabled: bool = Field(default=False)
+    #: Admit webhook targets in private ranges (on-premises receivers).
+    #: Loopback, link-local and metadata hosts are refused regardless
+    #: (``ccf.governance.webhook_url``).
+    webhook_allow_private_targets: bool = Field(default=False)
+    #: Refresh CISA's Known Exploited Vulnerabilities catalog each scheduler
+    #: cycle (a GET to cisa.gov). Turn off for an air-gapped deployment and
+    #: load the catalog with ``ccf kev-sync --file``.
+    kev_sync_enabled: bool = Field(default=True)
     scheduler_interval_hours: float = Field(default=24.0)
 
     # How long per-resource posture detail is kept. The aggregate
@@ -109,6 +126,12 @@ class Settings(BaseSettings):
     # webhook to fan critical alerts out of the app.
     notify_webhook_url: str | None = Field(default=None)
     notify_min_severity: str = Field(default="critical")  # info|warning|critical
+    # The operator's ops channel as Slack threads, one per organization, through
+    # the Slack Web API (chat.postMessage). Used only when BOTH are set; then it
+    # replaces CCF_NOTIFY_WEBHOOK_URL for ops posts. The token is a secret: a
+    # SecretStr, so no repr or validation error of the settings prints it.
+    notify_slack_bot_token: SecretStr | None = Field(default=None)
+    notify_slack_channel: str | None = Field(default=None)
 
     # AI-assisted authoring (Anthropic). Narratives/remediation plans/risk text.
     anthropic_api_key: str | None = Field(default=None)
@@ -382,6 +405,13 @@ class Settings(BaseSettings):
     # re-checks for stale jobs rather than only once at process start.
     assessment_worker_poll_interval_seconds: float = Field(default=30.0)
     assessment_worker_reap_interval_seconds: float = Field(default=300.0)
+    # Event bus (transactional outbox). ``event_worker_enabled`` says a dedicated
+    # ``ccf event-worker`` process drains the outbox (compose sets it on BOTH the api
+    # and the worker). Otherwise the API drains inline -- one job per tick, for the
+    # dev loop -- unless ``event_drain_inline`` is turned off.
+    event_worker_enabled: bool = Field(default=False)
+    event_drain_inline: bool = Field(default=True)
+    event_drain_interval_seconds: float = Field(default=3.0)
     # AI dissent path (slice 6): runs an independent second model call (a
     # "challenger") against a satisfied verdict before an assessor ever sees
     # it -- a satisfied verdict that is wrong is a missed finding in an

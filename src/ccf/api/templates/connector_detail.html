@@ -56,6 +56,81 @@
   </div>
 </section>
 {% endif %}
+{% if aws_role %}
+<section class="card" style="margin-bottom:16px" id="aws-role">
+  <div class="card__header">
+    <div class="card__title">Role-based access (recommended)</div>
+    {% if aws_role.external_id %}<span class="chip chip--ok">External ID set</span>
+    {% else %}<span class="chip chip--warn">no External ID yet</span>{% endif %}
+  </div>
+  <div class="card__body">
+    <p class="dim" style="margin:0 0 12px;max-width:75ch;font-size:13px">
+      Create an IAM role in your account whose name starts with <span class="mono">{{ aws_role.role_prefix }}</span>,
+      attach the trust policy and the read-only permissions policy below, then enter its ARN as the Role ARN.
+      The External ID is Concord's, for this organization only; it is never typed in, and it keeps any other
+      Concord customer from asking Concord to assume your role.
+    </p>
+    {% if aws_role.external_id %}
+      <p><strong>External ID</strong> <span class="mono">{{ aws_role.external_id }}</span></p>
+      {% for partition, policy in aws_role.trust_policies.items() %}
+        <p class="dim" style="margin:12px 0 4px;font-size:12px">Trust policy ({{ partition }})</p>
+        <pre class="mono" style="white-space:pre-wrap;font-size:12px">{{ policy }}</pre>
+      {% else %}
+        <div class="note note--warn">This Concord host has no broker identity configured
+          (CCF_AWS_BROKER_ARN_GOVCLOUD / CCF_AWS_BROKER_ARN_COMMERCIAL), so a role cannot be assumed yet.</div>
+      {% endfor %}
+      <form method="post" action="/connectors/{{ c.id }}/aws-external-id" class="filters" style="margin-top:12px">
+        <input type="hidden" name="confirm" value="rotate">
+        <button class="btn btn--sm btn--ghost" type="submit">Rotate External ID</button>
+        <span class="dim" style="font-size:12px">Every trust policy naming the current ID stops working until updated.</span>
+      </form>
+    {% else %}
+      <form method="post" action="/connectors/{{ c.id }}/aws-external-id">
+        <button class="btn btn--primary" type="submit">Generate External ID</button>
+      </form>
+    {% endif %}
+    <p class="dim" style="margin:16px 0 4px;font-size:12px">Permissions policy: exactly the read actions Concord's AWS checks and capture make</p>
+    <pre class="mono" style="white-space:pre-wrap;font-size:12px">{{ aws_role.permissions_policy }}</pre>
+  </div>
+</section>
+<section class="card" style="margin-bottom:16px" id="aws-permissions">
+  <div class="card__header">
+    <div class="card__title">Permission check</div>
+    {% set pc = c.config.get('permission_check') if c.config else none %}
+    {% if pc %}<span class="dim" style="font-size:12px">{{ pc.at[:16].replace('T',' ') }}</span>{% endif %}
+  </div>
+  <div class="card__body">
+    <form method="post" action="/connectors/{{ c.id }}/aws-permissions" style="margin-bottom:12px">
+      <button class="btn btn--sm btn--ghost" type="submit">Check permissions</button>
+      <span class="dim" style="font-size:12px">Read-only. "Missing" only when AWS clearly refused; anything else is "unknown".</span>
+    </form>
+    {% if pc %}
+    <div class="table-wrap"><table class="data"><tbody>
+      {% for r in pc.results %}<tr>
+        <td>{{ r.title }}</td>
+        <td><span class="chip {% if r.status=='granted' %}chip--ok{% elif r.status=='missing' %}chip--err{% else %}chip--warn{% endif %}">{{ r.status }}</span></td>
+        <td class="dim mono" style="font-size:12px">{{ r.actions|join(', ') }}</td>
+        <td class="dim" style="font-size:12px">{{ r.note }}</td>
+      </tr>{% endfor %}
+    </tbody></table></div>
+    {% endif %}
+  </div>
+</section>
+<section class="card" style="margin-bottom:16px" id="aws-inventory">
+  <div class="card__header">
+    <div class="card__title">AWS Organizations inventory</div>
+    {% if c.last_sync and c.objects_discovered is not none %}<span class="chip chip--ok">{{ c.objects_discovered }} accounts · {{ c.last_sync.strftime('%Y-%m-%d %H:%M') }}</span>{% endif %}
+  </div>
+  <form class="card__body filters" method="post" action="/connectors/{{ c.id }}/aws-inventory">
+    <select class="select" name="system_id" aria-label="Boundary system" required>
+      <option value="">File accounts into system…</option>
+      {% for sy in systems %}<option value="{{ sy.id }}" {% if c.config and c.config.get('system_id') == sy.id %}selected{% endif %}>{{ sy.name }}</option>{% endfor %}
+    </select>
+    <button class="btn btn--primary" type="submit">Sync accounts</button>
+    <span class="dim" style="font-size:12px">Needs a management or delegated-administrator account. Additive: an account that disappears keeps its row, and its last-seen date goes cold.</span>
+  </form>
+</section>
+{% endif %}
 {% if spec %}
 <section class="card card--elevated" style="margin-bottom:16px">
   <div class="card__header">
@@ -70,7 +145,7 @@
       leave a secret field blank to keep the stored value.
     </p>
     <form method="post" action="/connectors/{{ c.id }}/credential">
-      {% for field in spec.fields %}
+      {% for field in spec.fields if not field.generated %}
       <label class="label" for="cred-{{ field.name }}" style="display:block;margin-bottom:4px">{{ field.label }}</label>
       {% if field.choices %}
       <select class="select" id="cred-{{ field.name }}" name="{{ field.name }}"

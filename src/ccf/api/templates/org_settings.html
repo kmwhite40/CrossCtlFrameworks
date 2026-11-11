@@ -1,0 +1,92 @@
+{% extends "base.html" %}
+{% block title %}Organization · Settings · Concord{% endblock %}
+{% block heading %}Organization{% endblock %}
+{% block subtitle %}The organization you are signed in to. Organizations are renamed by a platform administrator: Concord finds some organizations by name, so a name is not a tenant's to choose alone.{% endblock %}
+{% block actions %}<a class="btn btn--ghost" href="/settings">All settings</a>{% endblock %}
+{% macro alert_channel(target, ch, is_platform) %}
+<article class="card panel" id="alert-channel" style="margin-top:16px">
+  <header class="panel__head"><h2 class="panel__title">Alert channel</h2><span class="panel__hint">{{ target.name }} · Slack or Teams incoming webhook</span></header>
+  <div class="panel__body">
+    {# channel_outcome is a fixed message chosen by a code; never query-string text. #}
+    {% if channel_outcome and channel_outcome[0] %}<div class="chip chip--err" style="margin-bottom:12px" data-channel-error><i data-lucide="alert-triangle"></i> {{ channel_outcome[1] }}</div>
+    {% elif channel_outcome %}<div class="chip chip--ok" style="margin-bottom:12px" data-channel-notice><i data-lucide="check"></i> {{ channel_outcome[1] }}</div>{% endif %}
+    <p class="dim" style="margin:0 0 12px">This organization's alerts at or above the chosen severity are also posted here. The URL is stored encrypted and never shown again: anyone holding it can post to the channel.</p>
+    {# The route reduces ``ch`` to {"configured"} for a caller who cannot manage it. #}
+    {% if ch and ch.configured and ch.url_hint is not defined %}
+    <p style="margin:0" data-channel-set>An alert channel is set. Its administrators manage it.</p>
+    {% elif ch and ch.configured %}
+    <dl style="display:grid;grid-template-columns:max-content 1fr;gap:8px 14px;margin:0 0 12px" data-channel>
+      <dt class="dim">Destination</dt><dd class="mono" style="margin:0" data-channel-hint>{{ ch.url_hint }}</dd>
+      <dt class="dim">Posts</dt><dd style="margin:0">{% if ch.enabled %}<span class="chip chip--ok">on</span>{% else %}<span class="chip chip--ghost">off</span>{% endif %} at <strong>{{ ch.min_severity }}</strong> and above</dd>
+      <dt class="dim">Changed</dt><dd style="margin:0">{{ ch.updated_by or '—' }} · {{ (ch.updated_at or '')[:16] | replace('T', ' ') }}</dd>
+    </dl>
+    {% else %}
+    <p style="margin:0 0 12px" data-channel-none>No alert channel.</p>
+    {% endif %}
+    {% if can_manage_channel %}
+    <form method="post" action="/settings/organization/notify-channel" class="row" style="gap:8px;flex-wrap:wrap;align-items:center" data-channel-form>
+      {% if is_platform %}<input type="hidden" name="organization_id" value="{{ target.id }}">{% endif %}
+      <input class="input" style="min-width:320px" name="webhook_url" type="password" autocomplete="off" {% if not (ch and ch.configured) %}required {% endif %}placeholder="{% if ch and ch.configured %}New https:// URL (blank keeps the current one){% else %}https:// incoming-webhook URL{% endif %}" aria-label="Incoming-webhook URL">
+      <select class="select" name="min_severity" aria-label="Minimum severity">
+        {% for sev in channel_severities %}<option value="{{ sev }}"{% if (ch and ch.configured and ch.min_severity == sev) or (not (ch and ch.configured) and sev == 'critical') %} selected{% endif %}>{{ sev }} and above</option>{% endfor %}
+      </select>
+      <label class="dim" style="font-size:13px"><input type="checkbox" name="enabled" value="1"{% if not (ch and ch.configured) or ch.enabled %} checked{% endif %}> post alerts</label>
+      <button class="btn btn--primary btn--sm" type="submit">Save</button>
+    </form>
+    <p class="dim" style="margin:8px 0 0;font-size:13px">Saving a new URL sends a test post first; nothing is saved if it fails.</p>
+    {% if ch and ch.configured %}
+    <div class="row" style="gap:8px;margin-top:12px">
+      <form method="post" action="/settings/organization/notify-channel/test">{% if is_platform %}<input type="hidden" name="organization_id" value="{{ target.id }}">{% endif %}<button class="btn btn--ghost btn--sm" type="submit">Send a test post</button></form>
+      <form method="post" action="/settings/organization/notify-channel/delete">{% if is_platform %}<input type="hidden" name="organization_id" value="{{ target.id }}">{% endif %}<button class="btn btn--ghost btn--sm" type="submit">Remove channel</button></form>
+    </div>
+    {% endif %}
+    {% endif %}
+  </div>
+</article>
+{% endmacro %}
+{% block content %}
+{% if org %}
+<section class="grid-1-1">
+  <article class="card panel">
+    <header class="panel__head"><h2 class="panel__title">{{ org.name }}</h2></header>
+    <div class="panel__body">
+      <dl style="display:grid;grid-template-columns:max-content 1fr;gap:8px 14px;margin:0">
+        <dt class="dim">Created</dt><dd style="margin:0">{{ org.created_at.strftime('%Y-%m-%d') if org.created_at else '—' }}</dd>
+        <dt class="dim">Second factor required for</dt><dd style="margin:0">{{ org.mfa_policy }}</dd>
+        {% for label, n in counts.items() %}<dt class="dim">{{ label }}</dt><dd class="mono" style="margin:0" data-count="{{ label }}">{{ n }}</dd>{% endfor %}
+      </dl>
+    </div>
+  </article>
+  <article class="card panel">
+    <header class="panel__head"><h2 class="panel__title">Renaming</h2></header>
+    <div class="panel__body"><p class="dim" style="margin:0">Renames are done by a platform administrator, not by an organization's own administrators. Ask your Concord operator to change this name.</p></div>
+  </article>
+</section>
+{{ alert_channel(org, channel, false) }}
+<p class="dim" style="margin-top:16px">Structure is kept on <a href="/org-units">business units</a>, <a href="/teams">teams</a>, <a href="/committees">committees</a> and <a href="/objectives">strategic objectives</a>.</p>
+{% elif can_rename %}
+<article class="card panel">
+  <header class="panel__head"><h2 class="panel__title">Organizations</h2><span class="panel__hint">platform administrator · {{ organizations | length }} live</span></header>
+  {% if organizations %}
+  <div class="table-wrap"><table class="data">
+    <thead><tr><th>Organization</th><th>Alert channel</th><th>Rename</th></tr></thead>
+    <tbody>{% for o in organizations %}<tr>
+      <td><strong>{{ o.name }}</strong></td>
+      <td>{% set c = channels.get(o.id) %}{% if c %}<span class="mono dim">{{ c.url_hint }}</span>{% if not c.enabled %} <span class="chip chip--ghost">off</span>{% endif %}{% else %}<span class="dim">none</span>{% endif %} · <a href="/settings/organization?channel_org={{ o.id }}#alert-channel">manage</a></td>
+      <td><form method="post" action="/settings/organization" class="row" style="gap:6px">
+        <input type="hidden" name="organization_id" value="{{ o.id }}">
+        <input class="input" name="name" value="{{ o.name }}" required maxlength="255" aria-label="New name for {{ o.name }}">
+        <button class="btn btn--ghost btn--sm" type="submit">Rename</button>
+      </form></td>
+    </tr>{% endfor %}</tbody>
+  </table></div>
+  {% else %}<div class="empty-state"><h2>No organizations</h2><p>Organizations are created on Assets &amp; Systems or with <span class="mono">ccf</span> on the command line.</p></div>{% endif %}
+</article>
+{% if channel_org %}{{ alert_channel(channel_org, channel, true) }}{% endif %}
+{% else %}
+<article class="card panel"><div class="empty-state">
+  <h2>No organization</h2>
+  <p>You are not signed in as a member of an organization, so there is no organization to show here.</p>
+</div></article>
+{% endif %}
+{% endblock %}

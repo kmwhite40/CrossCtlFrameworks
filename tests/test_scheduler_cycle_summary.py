@@ -133,6 +133,27 @@ def test_the_summary_carries_the_counts_rather_than_the_word_ok() -> None:
     assert "ok" not in s.values()
 
 
+def test_a_partial_graph_build_is_counted_and_named() -> None:
+    clean = cycle_summary(_out())
+    assert clean["assurance_partial"] == 0  # present on a clean cycle
+    assert "assurance_partial_parts" not in clean
+    s = cycle_summary(
+        _out(
+            assurance_graph={
+                "organizations_processed": [1, 2],
+                "nodes": 120,
+                "edges": 340,
+                "partial": ["risks@2", "vendors@2", "poams@1"],
+            }
+        )
+    )
+    assert s["assurance_partial"] == 2
+    assert s["assurance_partial_parts"] == ["poams@1", "risks@2", "vendors@2"]
+    # An unexpected shape is not a crash and not a count.
+    odd = cycle_summary(_out(assurance_graph={"partial": 3}))
+    assert odd["assurance_partial"] == 0
+
+
 def test_a_cycle_that_did_nothing_is_visibly_different_from_one_that_worked() -> None:
     """The distinction the old line could not make.
 

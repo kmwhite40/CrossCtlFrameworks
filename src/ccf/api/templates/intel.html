@@ -1,0 +1,66 @@
+{% extends "base.html" %}
+{% block title %}Threat Intelligence · Concord{% endblock %}
+{% block heading %}Known exploited vulnerabilities{% endblock %}
+{% block subtitle %}Your open POA&amp;Ms, scan findings included, that name a CVE in CISA's Known Exploited Vulnerabilities catalog, with CISA's due date and known ransomware use.{% endblock %}
+{% block actions %}
+{% if can_sync %}
+<form method="post" action="/intel/kev/sync">
+  <button class="btn btn--primary" type="submit"><i data-lucide="refresh-cw"></i>Sync KEV now</button>
+</form>
+{% endif %}
+{% endblock %}
+{% block content %}
+{% if sync_error %}
+<div class="note note--err" role="alert"><strong>The KEV catalog was not refreshed.</strong> {{ sync_error }} The catalog is unchanged{% if catalog.entries %} (version {{ catalog.catalog_version }}){% endif %}.</div>
+{% elif synced %}
+<div class="note note--info" role="status">KEV catalog synced: {{ synced }} entries.</div>
+{% endif %}
+
+<section class="kpi-grid kpi-grid--4">
+  <div class="kpi"><span class="kpi__label">KEV catalog</span>
+    <span class="kpi__value">{{ catalog.entries if catalog.entries else '—' }}</span>
+    <span class="kpi__meta">{% if catalog.entries %}entries · version {{ catalog.catalog_version or 'unknown' }}{% else %}never synced{% endif %}</span></div>
+  <div class="kpi"><span class="kpi__label">Last synced</span>
+    <span class="kpi__value">{{ catalog.synced_at.strftime('%Y-%m-%d') if catalog.synced_at else '—' }}</span>
+    <span class="kpi__meta">{{ catalog.synced_at.strftime('%H:%M UTC') if catalog.synced_at else 'no sync recorded' }}</span></div>
+  <div class="kpi"><span class="kpi__label">POA&amp;Ms naming a KEV CVE</span>
+    <span class="kpi__value {% if found.poams_matched %}kpi__value--danger{% endif %}">{{ found.poams_matched if catalog.entries else '—' }}</span>
+    <span class="kpi__meta" title="Open and in-progress POA&amp;Ms on live systems whose title or weakness names a CVE id">of {{ found.with_cve }} naming any CVE, of {{ found.examined }} open</span></div>
+  <div class="kpi"><span class="kpi__label">Known ransomware use</span>
+    <span class="kpi__value {% if found.ransomware %}kpi__value--danger{% endif %}">{{ found.ransomware if catalog.entries else '—' }}</span>
+    <span class="kpi__meta">matches CISA marks "Known"</span></div>
+</section>
+
+<article class="card panel">
+  <header class="panel__head"><h2 class="panel__title">Matches</h2>
+    <span class="panel__hint">{{ found.matches | length }} CVE match{{ 'es' if found.matches|length != 1 }} · {{ found.past_due }} where the POA&amp;M is due after CISA's date or has no due date</span></header>
+  {% if not catalog.entries %}
+  <div class="empty-state"><i data-lucide="shield-question"></i><h2>No KEV catalog to match against</h2>
+    <p>The catalog has never been synced on this deployment, so no match can be claimed either way. {% if can_sync %}Use <strong>Sync KEV now</strong>, or run <code>ccf kev-sync</code>.{% else %}The catalog is shared by every organization on this deployment, so it is refreshed by the platform operator (<code>ccf kev-sync</code> or the daily scheduler), not per organization.{% endif %}</p></div>
+  {% elif found.matches %}
+  <div class="table-wrap"><table>
+    <thead><tr><th>CVE</th><th>POA&amp;M</th><th>System</th><th>Source</th><th>Severity</th><th>POA&amp;M due</th><th title="The remediation date CISA set under BOD 22-01 for federal civilian agencies">CISA due</th><th>Ransomware</th></tr></thead>
+    <tbody>{% for m in found.matches %}<tr>
+      <td class="mono"><strong>{{ m.entry.cve_id }}</strong>{% if m.entry.name %}<div class="dim clamp-3">{{ m.entry.name }}</div>{% endif %}</td>
+      <td><a href="/poams">{{ m.title }}</a><div class="dim">{{ m.status | replace('_',' ') }}</div></td>
+      <td>{{ m.system }}</td>
+      <td>{% if m.source == 'scan' %}<span class="chip chip--info">Scan{% if m.scanner %} · {{ m.scanner }}{% endif %}</span>{% else %}<span class="chip chip--ghost">{{ (m.source or 'unspecified') | replace('_',' ') }}</span>{% endif %}</td>
+      <td><span class="sevchip sevchip--{{ m.severity }}">{{ m.severity | capitalize }}</span></td>
+      <td>{% if m.due_on %}<span class="{% if m.past_kev_due %}kanban__due--late{% endif %}">{{ m.due_on }}</span>{% else %}<span class="kanban__due--late">none set</span>{% endif %}</td>
+      <td>{{ m.entry.due_date or '—' }}</td>
+      <td>{% if m.entry.known_ransomware == 'Known' %}<span class="chip chip--err">Known</span>{% else %}<span class="dim">{{ m.entry.known_ransomware or '—' }}</span>{% endif %}</td>
+    </tr>{% endfor %}</tbody>
+  </table></div>
+  {% else %}
+  <p class="panel__empty">None of the {{ found.with_cve }} open POA&amp;M{{ 's' if found.with_cve != 1 }} naming a CVE id names one in the KEV catalog ({{ found.examined }} open POA&amp;M{{ 's' if found.examined != 1 }} read{% if found.scan_examined %}, {{ found.scan_examined }} from scans{% endif %}).{% if not found.with_cve %} A scan upload records each finding's CVE references on its POA&amp;M; with none recorded, there is nothing to match.{% endif %}</p>
+  {% endif %}
+</article>
+
+<article class="card panel">
+  <header class="panel__head"><h2 class="panel__title">How the match is made</h2></header>
+  <div class="panel__body">
+    <p>Concord keeps no separate scan-finding table: an uploaded scan is reconciled into POA&amp;Ms, and each finding's CVE references are written into its POA&amp;M's weakness text. This page reads CVE ids (<code>CVE-YYYY-NNNN…</code>) out of the title and weakness of every open or in-progress POA&amp;M on your live systems, scan-sourced or not, and looks each one up in the catalog. It is a text match: a POA&amp;M that describes a KEV vulnerability without naming its CVE id is not found.</p>
+    <p class="dim">Catalog source: <span class="mono" style="overflow-wrap:anywhere">{{ source_url }}</span>. CISA's due dates bind federal civilian agencies under BOD 22-01; for anyone else they are CISA's recommendation.</p>
+  </div>
+</article>
+{% endblock %}

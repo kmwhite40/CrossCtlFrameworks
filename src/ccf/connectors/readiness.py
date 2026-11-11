@@ -197,6 +197,7 @@ async def provider_readiness(
             session, organization_id=organization_id, connector_type=connector_key
         )
         if cfg is not None:
+            status_was = cfg.status
             cfg.readiness_status = str(out["status"])
             cfg.readiness_checked_at = checked_at
             cfg.readiness_detail = out
@@ -207,5 +208,8 @@ async def provider_readiness(
                 cfg.status = "error" if out["status"] == "unavailable" else "not_configured"
                 cfg.error_message = str(out.get("reason") or "")[:2000] or None
             await session.flush()
+            from .credentials import emit_connector_changed  # noqa: PLC0415
+
+            await emit_connector_changed(session, cfg, status_was=status_was)
 
     return out

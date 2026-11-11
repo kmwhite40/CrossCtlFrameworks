@@ -11,12 +11,16 @@ from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ...analytics.framework_posture import baseline_controls, fold_to_control
+from ...ato import lifecycle
+from ...ato import roles as system_roles
 from ...auth import Principal
 from ...catalog.baseline_delta import (
     BaselineNotSetError,
     UnknownBaselineError,
     baseline_delta,
 )
+from ...config import get_settings
 from ...constants import POAM_ACTIVE_STATUSES
 from ...governance import bus, reactions
 from ...models import (
@@ -40,12 +44,11 @@ from ...schemas import (
 from ..auth_deps import get_principal, require_role, resolve_caller_org
 from ..deps import get_session
 
-# Severities that block authorization while an open weakness exists.
-_ATO_BLOCKING_SEVERITIES = ("critical", "high")
-# POA&M statuses that represent an unresolved weakness (mirrors compliance_summary).
-_ATO_BLOCKING_STATUSES = POAM_ACTIVE_STATUSES
-# Default authorization period when the caller doesn't specify an expiration.
-_DEFAULT_ATO_PERIOD_DAYS = 365
+#: Most-addressed first: how a control with several implementation rows is
+#: summarized. ``not_applicable`` is last, so it wins only when nothing else does.
+_SUMMARY_PRECEDENCE = (
+    "implemented", "inherited", "partial", "planned", "not_implemented", "not_applicable",
+)
 
 router = APIRouter(prefix="/api/systems", tags=["systems"])
 
@@ -93,9 +96,33 @@ async def create_system(
     data["organization_id"] = resolve_caller_org(principal.org_id, data["organization_id"])
     obj = System(**data)
     session.add(obj)
+    await session.flush()
+    await bus.emit(
+        session,
+        verb="created",
+        entity_type="system",
+        entity_id=obj.id,
+        summary=f"System {obj.name} created",
+        org_id=obj.organization_id,
+        actor=principal.email,
+    )
     await session.commit()
     await session.refresh(obj)
     return SystemOut.model_validate(obj)
+
+
+async def _certification_snapshot_count(session: AsyncSession, system_id: int) -> int:
+    from ...models_cr26 import CertificationSnapshot  # noqa: PLC0415
+
+    return int(
+        (
+            await session.execute(
+                select(func.count(CertificationSnapshot.id)).where(
+                    CertificationSnapshot.system_id == system_id
+                )
+            )
+        ).scalar_one()
+    )
 
 
 async def _dependent_authorization_record_count(session: AsyncSession, system_id: int) -> int:
@@ -163,6 +190,15 @@ async def delete_system(
     sys = await require_system_in_scope(session, system_id, principal)
     if hard:
         dependent_count = await _dependent_authorization_record_count(session, system_id)
+        if await _certification_snapshot_count(session, system_id):
+            # CDS-CSO-HAD: snapshots stay for the duration of certification,
+            # and the database refuses to remove them; say so, not a 500.
+            raise HTTPException(
+                409,
+                "cannot hard-delete: system has FedRAMP certification snapshots, "
+                "which are kept for the duration of certification — use the "
+                "default soft delete instead",
+            )
         if dependent_count:
             raise HTTPException(
                 409,
@@ -172,6 +208,16 @@ async def delete_system(
         await session.delete(sys)
     else:
         sys.deleted_at = datetime.now(UTC)
+    await bus.emit(
+        session,
+        verb="deleted",
+        entity_type="system",
+        entity_id=system_id,
+        summary=f"System {sys.name} {'purged' if hard else 'deleted'}",
+        org_id=sys.organization_id,
+        actor=principal.email,
+        payload={"hard": hard},
+    )
     await session.commit()
 
 
@@ -186,32 +232,33 @@ async def authorize_system(
     session: AsyncSession = Depends(get_session),
     principal: Principal = Depends(require_role("admin")),
 ) -> SystemOut:
-    """Transition a system's ``ato_status`` toward "authorized".
+    """Transition a system's ``ato_status`` to "authorized" in one step.
 
-    Refuses (409) when the system has an open POA&M of critical/high severity —
-    an unresolved high-risk weakness must not be authorized away. Does not add
-    an approval workflow; that's a later slice (ISSM-08).
+    The single-operator path only. With authentication enabled an authorization
+    is the AO's decision on a reviewed package (``ccf.ato.lifecycle``: ISSO →
+    ISSM → AO), and this endpoint would let an admin skip every stage of it, so
+    it refuses (409) and points there.
+
+    Refuses (409) on the same blockers the package path enforces: an open
+    critical/high POA&M (an unresolved high-risk weakness must not be
+    authorized away) or a risk acceptance past its expiry.
     """
     sys = await require_system_in_scope(session, system_id, principal)
-
-    blocking = (
-        await session.execute(
-            select(func.count(POAM.id))
-            .where(POAM.system_id == system_id)
-            .where(POAM.severity.in_(_ATO_BLOCKING_SEVERITIES))
-            .where(POAM.status.in_(_ATO_BLOCKING_STATUSES))
-        )
-    ).scalar_one()
-    if blocking:
+    if get_settings().auth_enabled:
         raise HTTPException(
             409,
-            "cannot authorize: system has an open critical/high severity POA&M",
+            "authorize this system through an authorization package: capture one, then "
+            "submit it for ISSO, ISSM and Authorizing Official review",
         )
+
+    found = await lifecycle.blockers(session, system_id)
+    if found:
+        raise HTTPException(409, "cannot authorize: " + "; ".join(b.title for b in found))
 
     previous_status = sys.ato_status
     sys.ato_status = "authorized"
     sys.ato_expires_on = body.expires_on or (
-        date.today() + timedelta(days=_DEFAULT_ATO_PERIOD_DAYS)
+        date.today() + timedelta(days=lifecycle.DEFAULT_ATO_PERIOD_DAYS)
     )
     await session.flush()
     await bus.emit(
@@ -223,9 +270,33 @@ async def authorize_system(
             f"System {sys.name} authorized ({previous_status or 'none'} → authorized), "
             f"expires {sys.ato_expires_on}"
         ),
-        org_id=principal.org_id,
+        org_id=sys.organization_id,
         actor=principal.email,
     )
+    await session.commit()
+    await session.refresh(sys)
+    return SystemOut.model_validate(sys)
+
+
+class ImpactLevelIn(BaseModel):
+    dod_impact_level: str | None = None
+
+
+@router.put("/{system_id}/dod-impact-level", response_model=SystemOut)
+async def set_dod_impact_level(
+    system_id: int,
+    body: ImpactLevelIn,
+    session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(require_role("admin")),
+) -> SystemOut:
+    """Declare the DoD CC SRG impact level the system is authorized at."""
+    sys = await require_system_in_scope(session, system_id, principal)
+    try:
+        await system_roles.set_dod_impact_level(
+            session, system=sys, level=body.dod_impact_level, principal=principal
+        )
+    except system_roles.RoleError as e:
+        raise HTTPException(422, str(e)) from e
     await session.commit()
     await session.refresh(sys)
     return SystemOut.model_validate(sys)
@@ -239,38 +310,38 @@ async def compliance_summary(
 ) -> ComplianceSummary:
     sys = await require_system_in_scope(session, system_id, principal)
 
-    # Total controls for this baseline.
-    baseline_col = {
-        "low": Control.fisma_low,
-        "moderate": Control.fisma_mod,
-        "high": Control.fisma_high,
-    }.get(sys.baseline or "", Control.fisma_mod)
-    total = (
-        await session.execute(select(func.count(Control.id)).where(baseline_col.is_(True)))
-    ).scalar_one()
+    # The baseline's *controls*, folded the way framework_posture folds them.
+    # This used to count raw catalog rows (objectives and ODP rows inflate that
+    # about 4x), silently assume Moderate when the system declares no baseline,
+    # and count implementation rows outside the baseline. A system with no
+    # baseline has no denominator, and says so.
+    raw: object = sys.baseline
+    baseline = str(getattr(raw, "value", raw) or "") or None
+    controls = await baseline_controls(session, baseline or "")
+    total = len(controls)
 
-    stmt = (
-        select(ControlImplementation.status, func.count())
-        .where(ControlImplementation.system_id == system_id)
-        .group_by(ControlImplementation.status)
-    )
-    buckets = {
-        s: 0
-        for s in (
-            "implemented",
-            "partial",
-            "planned",
-            "not_implemented",
-            "inherited",
-            "not_applicable",
+    # One status per baseline control: a control with several implementation
+    # rows (base and enhancement rows fold together) takes the most-addressed
+    # one, and is N/A only when every row says so.
+    statuses: dict[str, set[str]] = {}
+    for identifier, status in (
+        await session.execute(
+            select(Control.identifier, ControlImplementation.status)
+            .join(Control, Control.id == ControlImplementation.control_id)
+            .where(ControlImplementation.system_id == system_id)
         )
-    }
-    for status, count in (await session.execute(stmt)).all():
-        buckets[status] = count
+    ).all():
+        folded = fold_to_control(identifier)
+        if folded in controls:
+            statuses.setdefault(folded, set()).add(str(status))
+    buckets = dict.fromkeys(_SUMMARY_PRECEDENCE, 0)
+    for found in statuses.values():
+        winner = next(st for st in _SUMMARY_PRECEDENCE if st in found or st == "not_applicable")
+        buckets[winner] += 1
 
     implemented = buckets["implemented"] + buckets["inherited"]
     applicable = total - buckets["not_applicable"]
-    coverage = (implemented / applicable * 100.0) if applicable else 0.0
+    coverage = round(implemented / applicable * 100.0, 2) if applicable > 0 else None
 
     open_poams = (
         await session.execute(
@@ -290,6 +361,7 @@ async def compliance_summary(
 
     return ComplianceSummary(
         system_id=system_id,
+        baseline=baseline,
         total_controls=total,
         implemented=buckets["implemented"],
         partial=buckets["partial"],
@@ -297,7 +369,7 @@ async def compliance_summary(
         not_implemented=buckets["not_implemented"],
         inherited=buckets["inherited"],
         not_applicable=buckets["not_applicable"],
-        coverage_pct=round(coverage, 2),
+        coverage_pct=coverage,
         open_poams=open_poams,
         overdue_poams=overdue_poams,
     )
@@ -331,10 +403,11 @@ async def upsert_implementation(
         entity_type="control_implementation",
         entity_id=obj.id,
         summary=f"Control implementation {control_id} → {obj.status}",
-        org_id=principal.org_id,
+        org_id=await bus.system_org(session, system_id),
         actor=principal.email,
+        payload={"system_id": system_id},
     )
-    # Reaction: propagate this status to crosswalked controls (map once, comply many).
+    # Reaction: suggest the crosswalked controls this status may also apply to.
     propagation = await reactions.propagate_implementation(
         session,
         system_id=system_id,
@@ -388,6 +461,18 @@ async def bulk_import_implementations(
         if r.narrative is not None:
             obj.narrative = r.narrative
         upserted += 1
+    if upserted:
+        await session.flush()
+        await bus.emit(
+            session,
+            verb="implementations_imported",
+            entity_type="system",
+            entity_id=system_id,
+            summary=f"{upserted} control implementation(s) bulk-imported",
+            org_id=await bus.system_org(session, system_id),
+            actor=principal.email,
+            payload={"system_id": system_id, "upserted": upserted},
+        )
     await session.commit()
     return {"upserted": upserted, "skipped": skipped, "total": len(rows)}
 

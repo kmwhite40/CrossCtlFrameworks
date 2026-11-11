@@ -114,11 +114,15 @@ implements it as a first-class, separate layer — traditional FedRAMP Rev. 5 sc
 (`systems.baseline`, `ccf.scoring`) is untouched — while staying **traceable to NIST
 SP 800-53** through each KSI's control mapping.
 
-- **KSI catalog** — 51 indicators across the 10 published families
-  (CED/CMT/CNA/IAM/INR/MLA/PIY/RPL/SVC/TPR), seeded from
-  [`data/fedramp_20x_ksi_catalog.json`](data/fedramp_20x_ksi_catalog.json) (packaged
-  fallback ships in the wheel/image). Representative wording + rules; update the seed,
-  don't touch business logic.
+- **KSI catalog** — FedRAMP's own 46 indicators across 10 themes
+  (CED/CMT/CNA/IAM/INR/MLA/PIY/RPL/SCR/SVC), seeded from the vendored, hash-pinned
+  [FedRAMP Consolidated Rules for 2026](src/ccf/fedramp20x/rules_data/) (`FedRAMP/rules`,
+  public domain). Statements and 800-53 mappings are FedRAMP's, verbatim; Concord's
+  validation rules and curated posture-check methods live separately in
+  `rules_data/ksi_rules.json`. There are no verdict rules yet, so every KSI's
+  verdict is manual. 13 KSIs carry methods that can raise them to `warn`, never
+  to `pass`. Superseded indicators are retired, never
+  deleted. After upgrading, run `ccf fedramp20x seed-ksi`.
 - **Deterministic validation engine** — evaluates each KSI's machine-readable rule
   (`control_state` / `control_any` / `evidence_present` / `dependency_authorized` /
   `connector_capture` / `any_of` / `manual`) against control implementations,

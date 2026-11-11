@@ -18,6 +18,7 @@ from sqlalchemy.orm import selectinload
 from ...auth import Principal
 from ...config import get_settings, is_dev_env
 from ...connectors.credential_spec import configurable_types
+from ...connectors.credentials import emit_connector_changed
 from ...governance import bus, control_tests, trust_corroboration
 from ...ingest.scanners import SEVERITY_SLA_DAYS
 from ...models import POAM, System, Task
@@ -770,8 +771,9 @@ async def promote_finding_to_poam(
         entity_type="poam",
         entity_id=poam.id,
         summary=f"POA&M opened from audit finding: {poam.title}",
-        org_id=principal.org_id,
+        org_id=await bus.system_org(session, poam.system_id),
         actor=principal.email,
+        payload={"system_id": poam.system_id},
     )
     await session.commit()
     return {
@@ -856,6 +858,9 @@ async def create_connector(
         )
     c = ConnectorConfig(organization_id=principal.org_id, **body.model_dump())
     session.add(c)
+    await emit_connector_changed(
+        session, c, status_was=None, created=True, actor=principal.email
+    )
     await session.commit()
     return _conn_out(c)
 
@@ -907,7 +912,7 @@ async def sync_connector(
         entity_type="connector_config",
         entity_id=c.id,
         summary=f"Connector '{c.name}' sync: {discovered} objects (mock)",
-        org_id=principal.org_id,
+        org_id=c.organization_id,
         actor=principal.email,
         payload={"objects": discovered, "mock": True},
     )
@@ -983,6 +988,8 @@ async def create_control_test(
 ) -> dict[str, Any]:
     t = ControlTest(organization_id=principal.org_id, **body.model_dump())
     session.add(t)
+    await session.flush()
+    await control_tests.emit_control_test_created(session, t, actor=principal.email)
     await session.commit()
     return _test_out(t)
 
@@ -1066,8 +1073,13 @@ async def run_control_test(
         entity_type="control_test",
         entity_id=t.id,
         summary=f"Control test {body.status}: {t.control_id}",
-        org_id=principal.org_id,
+        org_id=(
+            t.organization_id
+            if t.organization_id is not None
+            else await bus.system_org(session, t.system_id)
+        ),
         actor=principal.email,
+        payload={"system_id": t.system_id},
     )
     await session.commit()
     return {"test_id": t.id, "status": body.status, "last_tested_at": t.last_tested_at}

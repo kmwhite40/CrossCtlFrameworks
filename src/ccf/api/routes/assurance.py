@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -32,20 +32,24 @@ async def rebuild_graph(
 @router.get("/graph/systems/{system_id}")
 async def system_graph(
     system_id: int,
-    hops: int = 5,
+    hops: int = Query(5, ge=1, le=10),
+    scope: Literal["connected", "system"] = "connected",
     session: AsyncSession = Depends(get_session),
     principal: Principal = Depends(get_principal),
 ) -> dict[str, Any]:
-    """The connected subgraph around a system — its authorization digital twin."""
+    """The subgraph around a system, with the build it came from.
+
+    ``scope=system`` keeps it to this system's own nodes (what /graph draws);
+    ``connected`` (the default) follows every edge, as impact analysis does.
+    """
     # Validated before the graph query, which is keyed on the entity id and has
     # no notion of whether that system still exists. Without this a deleted
     # system returned its whole subgraph, and a system in another tenant
     # returned an empty one with a 200 -- the only endpoint of thirty-one that
     # answered anything at all for a foreign id.
-    await require_system_in_scope(session, system_id, principal)
-    return await impact.subgraph(
-        session, org_id=principal.org_id, entity_type="system",
-        entity_id=str(system_id), max_hops=hops,
+    sysm = await require_system_in_scope(session, system_id, principal)
+    return await impact.system_view(
+        session, system=sysm, hops=hops, within_system=scope == "system"
     )
 
 

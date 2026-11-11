@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+{% from "_viz.html" import sevlist %}
+{% block title %}Issues · Concord{% endblock %}
+{% block heading %}Issues{% endblock %}
+{% block subtitle %}One list of everything open: POA&amp;Ms, audit findings, vendor findings and failing control tests, highest severity first, then oldest. Each is worked where it lives.{% endblock %}
+{% block actions %}<a class="btn btn--secondary" href="/exceptions"><i data-lucide="shield-alert"></i>Exceptions</a>{% endblock %}
+{% block content %}
+<section class="kpi-grid kpi-grid--4">
+  {% for k in kinds %}
+  <div class="kpi"><span class="kpi__label">{{ labels[k] }}s</span><span class="kpi__value">{{ by_kind.get(k, 0) }}</span></div>
+  {% endfor %}
+</section>
+
+<div class="grid-2-1">
+<article class="card panel">
+  <header class="panel__head"><h2 class="panel__title">Open issues</h2><span class="panel__hint">{{ issues | length }} shown of {{ total }}</span></header>
+  <form method="get" action="/issues" class="filters">
+    <select class="select" name="kind" aria-label="Kind">
+      <option value="">All kinds</option>
+      {% for k in kinds %}<option value="{{ k }}" {% if kind == k %}selected{% endif %}>{{ labels[k] }}</option>{% endfor %}
+    </select>
+    <select class="select" name="severity" aria-label="Severity">
+      <option value="">All severities</option>
+      {% for s in severities %}<option value="{{ s }}" {% if severity == s %}selected{% endif %}>{{ s | capitalize }}</option>{% endfor %}
+    </select>
+    <button class="btn btn--primary" type="submit"><i data-lucide="filter"></i>Filter</button>
+  </form>
+  {% if issues %}
+  <div class="table-wrap"><table>
+    <thead><tr><th>Kind</th><th>Issue</th><th>Severity</th><th title="Days since the issue was identified or created; for a failing test, since its current run of failures began">Age</th><th>Due</th><th></th></tr></thead>
+    <tbody>{% for i in issues %}<tr>
+      <td><span class="chip chip--ghost">{{ i.label }}</span></td>
+      <td><strong>{{ i.title }}</strong><div class="dim">{{ i.context or '—' }} · {{ i.status | replace('_',' ') }}</div></td>
+      <td>{% if i.severity == 'unrated' %}<span class="dim" title="{% if i.kind == 'control_test' %}Control tests carry no severity{% else %}No severity recorded{% endif %}">unrated</span>{% else %}<span class="sevchip sevchip--{{ i.severity }}">{{ i.severity | capitalize }}</span>{% endif %}</td>
+      <td>{% if i.age is not none %}{{ i.age }} d{% else %}<span class="dim" title="No identification date recorded">—</span>{% endif %}</td>
+      <td>{% if i.due %}<span class="{% if i.overdue %}kanban__due--late{% endif %}">{{ i.due }}</span>{% else %}<span class="dim">—</span>{% endif %}</td>
+      <td><a href="{{ i.href }}">Open</a></td>
+    </tr>{% endfor %}</tbody>
+  </table></div>
+  {% elif total %}
+  <p class="panel__empty">No open issue matches these filters. <a href="/issues">Show all {{ total }}.</a></p>
+  {% else %}
+  <p class="panel__empty">Nothing is open: no active POA&amp;M on a live system, no open audit or vendor finding, and no active control test whose latest result is a failure.</p>
+  {% endif %}
+</article>
+<article class="card panel">
+  <header class="panel__head"><h2 class="panel__title">By severity</h2></header>
+  <div class="panel__body">
+    {{ sevlist(by_sev, ('critical','high','moderate','low')) }}
+    <p class="dim">{{ by_sev.get('unrated', 0) }} unrated{% if by_kind.get('control_test') %}, including every failing control test (tests carry no severity){% endif %}.</p>
+  </div>
+</article>
+</div>
+{% endblock %}

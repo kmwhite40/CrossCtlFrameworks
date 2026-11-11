@@ -31,6 +31,7 @@ from ..models_grc import ControlTest, ControlTestResult
 from .attested import CHECK_SOURCE as ATTESTED_CHECK_SOURCE
 from .checks import CheckOutcome, platform_check_keys
 from .drift import latest_drift
+from .parameters import with_system_parameters
 from .resolve import ResolvedCheck, resolve_checks
 from .securescore import CHECK_SOURCE as CROSSWALK_CHECK_SOURCE
 from .telemetry import observe
@@ -176,6 +177,9 @@ async def scan_for_system(
     if check_keys is not None:
         allowed = set(check_keys)
         resolved = tuple(r for r in resolved if r.check.key in allowed)
+    # Values some checks take from the system itself (its DoD impact level),
+    # never from a pack.
+    resolved = with_system_parameters(resolved, system)
     expected_checks = [
         {
             "check_key": r.check.key,

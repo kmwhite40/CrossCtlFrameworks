@@ -17,6 +17,7 @@ so the tenant tests below exercise exactly the boundary an attacker would.
 from __future__ import annotations
 
 import os
+import uuid
 from typing import Any
 
 import pytest
@@ -109,7 +110,7 @@ def _client() -> AsyncClient:
 
 
 async def _mk_user(email: str, org_name: str) -> tuple[str, int]:
-    """Create an org + a real (viewer-role, non-admin) user in it; return
+    """Create an org + a real (control_owner, non-admin) user in it; return
     (bearer token, org id) -- identical shape to
     ``test_prep_tenant_isolation.py::_mk_user``.
     """
@@ -120,7 +121,7 @@ async def _mk_user(email: str, org_name: str) -> tuple[str, int]:
         user = User(
             email=email,
             organization_id=org.id,
-            role="viewer",
+            role="control_owner",
             active=True,
             password_hash=hash_password("pw"),
             api_token=new_api_token(),
@@ -730,3 +731,207 @@ async def test_require_proposal_app_check_rejects_a_foreign_principal_indep_of_r
         with pytest.raises(HTTPException) as exc_info:
             await assessment_engine._require_proposal(s, proposal_b, outsider)
         assert exc_info.value.status_code == 404  # 404, not 403 -- no id disclosure
+
+
+# --- A decided proposal stays decided ---------------------------------------
+# `open_control_proposal` returns the existing first-pass proposal whatever its
+# state, and `evaluate_control_proposal` reset it to draft and re-ran it. So
+# requesting a control again silently reopened a *rejected* proposal -- whose
+# docstring calls rejection terminal -- to complete, where it could then be
+# accepted; and an accepted one went back to complete with stale
+# accepted_by/at. Re-evaluation has its own path (open_reevaluation_proposal).
+
+
+@pytest.mark.parametrize("decided", ["accepted", "rejected"])
+async def test_requesting_a_decided_control_again_is_refused(
+    decided: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    token, org_id = await _mk_user(f"decided-{decided}@ae-api.test", f"AE Decided {decided}")
+    assessment_id = await _assessment_for(org_id, f"decided-{decided}")
+    proposal_id = await _evaluated_proposal(assessment_id, monkeypatch)
+    async with session_scope() as s:
+        await s.execute(
+            update(AssessmentControlProposal)
+            .where(AssessmentControlProposal.id == proposal_id)
+            .values(state=decided)
+        )
+
+    async with _client() as client:
+        response = await client.post(
+            "/api/assessment-engine/proposals",
+            json={"assessment_id": assessment_id, "control_identifier": _SEQ},
+            headers=_auth(token),
+        )
+    assert response.status_code == 409, response.text
+    async with session_scope() as s:
+        proposal = await s.get(AssessmentControlProposal, proposal_id)
+        assert proposal is not None and proposal.state == decided
+        pending = (
+            await s.execute(
+                select(AssessmentJob).where(
+                    AssessmentJob.control_proposal_id == proposal_id,
+                    AssessmentJob.status == "pending",
+                )
+            )
+        ).scalars().all()
+    assert pending == []
+
+
+async def test_evaluation_refuses_a_decided_proposal(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The guard is in the evaluator too: a job queued before the decision
+    must not undo it when a worker finally runs it."""
+    _token, org_id = await _mk_user("decided-eval@ae-api.test", "AE Decided Eval")
+    assessment_id = await _assessment_for(org_id, "decided-eval")
+    proposal_id = await _evaluated_proposal(assessment_id, monkeypatch)
+    async with session_scope() as s:
+        proposal = await s.get(AssessmentControlProposal, proposal_id)
+        assert proposal is not None
+        proposal.state = "rejected"
+        await s.flush()
+        with pytest.raises(service.ProposalDecidedError):
+            await evaluate_control_proposal(s, proposal)
+
+
+async def test_a_job_queued_before_the_decision_leaves_the_decision_alone(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """run_once's failure handler stamps the proposal ``failed``; a job for a
+    proposal decided meanwhile must not reach it, or a rejection becomes a
+    re-runnable failure."""
+    _token, org_id = await _mk_user("decided-job@ae-api.test", "AE Decided Job")
+    assessment_id = await _assessment_for(org_id, "decided-job")
+    proposal_id = await _evaluated_proposal(assessment_id, monkeypatch)
+    async with session_scope() as s:
+        s.add(AssessmentJob(organization_id=org_id, control_proposal_id=proposal_id,
+                            status="pending"))
+        await s.execute(
+            update(AssessmentControlProposal)
+            .where(AssessmentControlProposal.id == proposal_id)
+            .values(state="rejected")
+        )
+    async with session_scope() as s:
+        await engine_jobs.run_once(s, worker="t", limit=50)
+    async with session_scope() as s:
+        proposal = await s.get(AssessmentControlProposal, proposal_id)
+        assert proposal is not None and proposal.state == "rejected"
+
+
+async def test_accept_does_not_silently_replace_a_reviewed_not_applicable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A reviewed N/A is a scoping decision. Accepting an engine proposal used
+    to overwrite it, and the assessor's note with it, without a word."""
+    token, org_id = await _mk_user("na-keep@ae-api.test", "AE NA Keep")
+    assessment_id = await _assessment_for(org_id, "na-keep")
+    async with session_scope() as s:
+        s.add(AssessmentControlResult(
+            assessment_id=assessment_id, control_id=_SEQ, finding="not_applicable",
+            reviewed=True, reviewer="lead@ae-api.test",
+            assessor_note="Out of scope: no wireless in the boundary.",
+        ))
+    proposal_id = await _evaluated_proposal(assessment_id, monkeypatch)
+
+    async with _client() as client:
+        refused = await client.post(
+            f"/api/assessment-engine/proposals/{proposal_id}/accept", headers=_auth(token)
+        )
+        assert refused.status_code == 409 and "not applicable" in refused.json()["detail"]
+        async with session_scope() as s:
+            row = (await s.execute(select(AssessmentControlResult).where(
+                AssessmentControlResult.assessment_id == assessment_id))).scalar_one()
+            assert row.finding == "not_applicable"
+        accepted = await client.post(
+            f"/api/assessment-engine/proposals/{proposal_id}/accept",
+            params={"override_not_applicable": "true"}, headers=_auth(token),
+        )
+    assert accepted.status_code == 200, accepted.text
+    async with session_scope() as s:
+        row = (await s.execute(select(AssessmentControlResult).where(
+            AssessmentControlResult.assessment_id == assessment_id))).scalar_one()
+    assert row.finding == "satisfied"
+    assert row.assessor_note.startswith("Out of scope: no wireless in the boundary.")
+    assert "Engine rationale (accepted by" in row.assessor_note
+
+
+# --- Independence: an engine proposal on a 3PAO/IG/audit assessment ----------
+
+
+async def _independent_world(kind: str) -> tuple[dict[str, str], int]:
+    """An org with a control owner and an assessor, and a ``kind`` assessment.
+    Returns ({role: token}, assessment id)."""
+    tag = uuid.uuid4().hex[:8]
+    tokens: dict[str, str] = {}
+    async with session_scope() as s:
+        org = Organization(name=f"ae-indep-{tag}")
+        s.add(org)
+        await s.flush()
+        for role in ("control_owner", "assessor"):
+            user = User(
+                email=f"{role}-{tag}@ae-indep.test",
+                organization_id=org.id,
+                role=role,
+                active=True,
+                password_hash=hash_password("pw"),
+                api_token=new_api_token(),
+            )
+            s.add(user)
+            tokens[role] = user.api_token
+        system = System(organization_id=org.id, name=f"indep-{tag}")
+        s.add(system)
+        await s.flush()
+        assessment = Assessment(system_id=system.id, name=f"indep-{tag}", kind=kind)
+        s.add(assessment)
+        await s.flush()
+        return tokens, int(assessment.id)
+
+
+@pytest.mark.parametrize("kind", ["3pao", "ig", "audit"])
+async def test_on_an_independent_assessment_only_an_assessor_decides_a_proposal(
+    monkeypatch: pytest.MonkeyPatch, kind: str
+) -> None:
+    """Accepting writes the assessment result and rejecting records the
+    correct finding: on an independent assessment both are the assessor's
+    determination, as a result written by hand is (``require_independent_recorder``).
+    Without this a control owner could accept the engine's ``satisfied`` on
+    their own control and it would reach the SAR as the 3PAO's finding."""
+    tokens, assessment_id = await _independent_world(kind)
+    accept_id = await _evaluated_proposal(assessment_id, monkeypatch)
+    url = f"/api/assessment-engine/proposals/{accept_id}"
+    correction = {"corrected_finding": "other_than_satisfied", "note": "gap seen on site"}
+    async with _client() as client:
+        owner_accept = await client.post(f"{url}/accept", headers=_auth(tokens["control_owner"]))
+        owner_reject = await client.post(
+            f"{url}/reject", json=correction, headers=_auth(tokens["control_owner"])
+        )
+        async with session_scope() as s:
+            untouched = (
+                await s.execute(
+                    select(AssessmentControlProposal.state).where(
+                        AssessmentControlProposal.id == accept_id
+                    )
+                )
+            ).scalar_one()
+            no_result = (
+                await s.execute(
+                    select(AssessmentControlResult.id).where(
+                        AssessmentControlResult.assessment_id == assessment_id
+                    )
+                )
+            ).scalar_one_or_none()
+        assessor_accept = await client.post(f"{url}/accept", headers=_auth(tokens["assessor"]))
+    assert (owner_accept.status_code, owner_reject.status_code) == (403, 403)
+    assert untouched == "complete" and no_result is None
+    assert assessor_accept.status_code == 200
+
+
+async def test_on_a_self_assessment_a_control_owner_still_decides(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tokens, assessment_id = await _independent_world("self")
+    proposal_id = await _evaluated_proposal(assessment_id, monkeypatch)
+    async with _client() as client:
+        r = await client.post(
+            f"/api/assessment-engine/proposals/{proposal_id}/accept",
+            headers=_auth(tokens["control_owner"]),
+        )
+    assert r.status_code == 200

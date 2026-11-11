@@ -199,7 +199,7 @@ def _client() -> AsyncClient:
 
 
 async def _mk_user(email: str, org_name: str) -> tuple[str, int]:
-    """Create an org + a real (viewer-role, non-admin) user in it; return
+    """Create an org + a real (control_owner, non-admin) user in it; return
     (bearer token, org id). Deliberately not an admin: these tests are about
     what an *ordinary* org-scoped caller can and cannot reach.
     """
@@ -210,7 +210,7 @@ async def _mk_user(email: str, org_name: str) -> tuple[str, int]:
         user = User(
             email=email,
             organization_id=org.id,
-            role="viewer",
+            role="control_owner",
             active=True,
             password_hash=hash_password("pw"),
             api_token=new_api_token(),
