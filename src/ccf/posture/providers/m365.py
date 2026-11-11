@@ -24,7 +24,7 @@ no live tenant is reachable from the build environment.
 from __future__ import annotations
 
 from collections.abc import Callable
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 from typing import Any
 
 from ..types import PostureCheck, ResourceFinding
@@ -1233,6 +1233,7 @@ def evaluate_security_alerts_triaged(
     rows: list[dict[str, Any]],
     *,
     tenant_id: str,
+    now: datetime,
     threshold_days: int = ALERT_TRIAGE_DAYS,
 ) -> list[ResourceFinding]:
     """One finding per stale alert, so a failure names what to go and work.
@@ -1246,8 +1247,12 @@ def evaluate_security_alerts_triaged(
     Only high and critical alerts count, and only once older than
     ``threshold_days``. 3.14.3 asks for a response, and responding takes time --
     failing an alert raised this morning would make every tenant fail forever.
+
+    ``now`` is the scan's clock, passed in as for the other time-based
+    evaluators, so the evaluator stays pure and an alert's age is measured
+    against one instant.
     """
-    cutoff = datetime.now(UTC) - timedelta(days=threshold_days)
+    cutoff = now - timedelta(days=threshold_days)
     stale: list[ResourceFinding] = []
     for alert in rows:
         status = str(alert.get("status") or "").strip().lower()
@@ -1257,7 +1262,7 @@ def evaluate_security_alerts_triaged(
         created = _parse_graph_datetime(alert.get("createdDateTime"))
         if created is None or created > cutoff:
             continue
-        age = (datetime.now(UTC) - created).days
+        age = (now - created).days
         stale.append(
             ResourceFinding(
                 resource_id=str(alert.get("id") or "unknown"),

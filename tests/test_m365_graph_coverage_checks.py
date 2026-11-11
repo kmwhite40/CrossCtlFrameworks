@@ -112,6 +112,10 @@ def test_the_limit_is_parameterised() -> None:
 # ── SI.L2-3.14.3 — security alerts acted on ──────────────────────────────────
 
 
+#: The scan's clock. Fixed, so "age_days" means the same thing every day.
+_NOW = datetime(2026, 3, 1, 12, 0, tzinfo=UTC)
+
+
 def _alert(
     alert_id: str, *, status: str, severity: str = "high", age_days: int = 1
 ) -> dict[str, Any]:
@@ -120,14 +124,35 @@ def _alert(
         "status": status,
         "severity": severity,
         "title": f"alert {alert_id}",
-        "createdDateTime": (datetime.now(UTC) - timedelta(days=age_days)).isoformat(),
+        "createdDateTime": (_NOW - timedelta(days=age_days)).isoformat(),
     }
+
+
+def test_alert_age_is_measured_against_the_scans_clock() -> None:
+    """The evaluator judges age from the ``now`` it is given, never the wall clock.
+
+    It used to read ``datetime.now()`` itself (twice), unlike its siblings. The
+    acceptance fixture's alert seeded "one day old" against a fixed scan date
+    then aged one day per calendar day, crossed the 30-day threshold on
+    2026-10-28, and turned the suite red with no code change.
+    """
+    rows = [
+        _alert("fresh", status="new", age_days=1),
+        _alert("stale", status="new", age_days=60),
+    ]
+    findings = m365.evaluate_security_alerts_triaged(
+        rows, tenant_id=_TENANT, now=_NOW, threshold_days=30
+    )
+    assert {f.resource_id for f in findings if f.verdict == "fail"} == {"stale"}
+    assert findings[0].detail["age_days"] == 60
+    assert "for 60 days" in findings[0].observed
 
 
 def test_a_resolved_alert_is_not_a_finding() -> None:
     findings = m365.evaluate_security_alerts_triaged(
         [_alert("a1", status="resolved", age_days=90)],
         tenant_id=_TENANT,
+        now=_NOW,
         threshold_days=30,
     )
     assert [f.verdict for f in findings] == ["pass"]
@@ -137,6 +162,7 @@ def test_an_old_unresolved_high_alert_fails() -> None:
     findings = m365.evaluate_security_alerts_triaged(
         [_alert("a2", status="new", severity="high", age_days=60)],
         tenant_id=_TENANT,
+        now=_NOW,
         threshold_days=30,
     )
     assert [f.verdict for f in findings] == ["fail"]
@@ -152,6 +178,7 @@ def test_a_recent_unresolved_alert_is_not_yet_a_finding() -> None:
     findings = m365.evaluate_security_alerts_triaged(
         [_alert("a3", status="new", severity="high", age_days=2)],
         tenant_id=_TENANT,
+        now=_NOW,
         threshold_days=30,
     )
     assert [f.verdict for f in findings] == ["pass"]
@@ -162,6 +189,7 @@ def test_a_low_severity_alert_left_open_is_not_a_finding() -> None:
     findings = m365.evaluate_security_alerts_triaged(
         [_alert("a4", status="new", severity="informational", age_days=200)],
         tenant_id=_TENANT,
+        now=_NOW,
         threshold_days=30,
     )
     assert [f.verdict for f in findings] == ["pass"]
@@ -176,6 +204,7 @@ def test_each_stale_alert_is_its_own_finding() -> None:
             _alert("done", status="resolved", severity="high", age_days=90),
         ],
         tenant_id=_TENANT,
+        now=_NOW,
         threshold_days=30,
     )
     failed = {f.resource_id for f in findings if f.verdict == "fail"}
@@ -185,7 +214,7 @@ def test_each_stale_alert_is_its_own_finding() -> None:
 def test_no_alerts_at_all_passes() -> None:
     """Event data, not configuration: an empty list is a real, clean state."""
     findings = m365.evaluate_security_alerts_triaged(
-        [], tenant_id=_TENANT, threshold_days=30
+        [], tenant_id=_TENANT, now=_NOW, threshold_days=30
     )
     assert [f.verdict for f in findings] == ["pass"]
     assert findings[0].resource_id == _TENANT
