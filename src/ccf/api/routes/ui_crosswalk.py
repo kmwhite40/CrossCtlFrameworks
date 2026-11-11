@@ -19,6 +19,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Callable
+from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
@@ -50,11 +53,108 @@ UPLOAD_ROLES: tuple[str, ...] = ("admin", "control_owner")
 #: Per file. A CR26 package file is a few hundred kilobytes; this is generous.
 MAX_FILE_BYTES = 10 * 1024 * 1024
 
-EXPORTS = {
-    "controls": xw.control_rows,
-    "determinations": xw.determination_rows,
-    "register": xw.register_rows,
+#: How many schema errors the vendor upload keeps per file (``row.validation_errors``).
+KEPT_ERRORS = 50
+
+
+@dataclass(frozen=True)
+class Export:
+    """One download. ``build(model, generated, scope)`` gives the body."""
+
+    label: str
+    what: str
+    media_type: str
+    build: Callable[[xw.Model, datetime, str], bytes | str]
+    #: Refused when the package holds no vulnerability files.
+    needs_vulnerabilities: bool = False
+
+
+def _csv_of(rows: Callable[[xw.Model], list[list[Any]]]) -> Callable[..., str]:
+    return lambda model, _generated, _scope: xw.to_csv(rows(model))
+
+
+def _json(doc: dict[str, Any]) -> str:
+    return json.dumps(doc, indent=2, ensure_ascii=False) + "\n"
+
+
+def _report(model: xw.Model, generated: datetime, _scope: str) -> str:
+    from ...ssp.nist80053_docx import FAMILY_NAMES  # noqa: PLC0415 -- report only
+
+    families: dict[str, list[xw.ControlRow]] = {}
+    for c in model.controls:
+        families.setdefault(c.family, []).append(c)
+    return templates.get_template("crosswalk_report.html").render(
+        model=model,
+        states=xw.STATES,
+        notice=xw.NOTICE,
+        families=families,
+        family_names=FAMILY_NAMES,
+        generated=xw.utc_stamp(generated),
+        kinds=xw.PACKAGE_KINDS,
+    )
+
+
+#: Every download, by the file name in its URL. One gate serves them all.
+EXPORTS: dict[str, Export] = {
+    "review.xlsx": Export(
+        "Review workbook",
+        "Summary, control inheritance, agency determinations and the vulnerability register.",
+        xw.XLSX_MEDIA_TYPE,
+        lambda model, generated, _scope: xw.to_xlsx(
+            xw.workbook_sheets(model, generated), generated
+        ),
+    ),
+    "report.html": Export(
+        "Printable report",
+        "One self-contained page to read or print: the coverage summary and every control, "
+        "family by family.",
+        "text/html; charset=utf-8",
+        _report,
+    ),
+    "controls.csv": Export(
+        "Controls",
+        "Every baseline control with the provider statements, validation, assessment and "
+        "evidence mapped to it.",
+        "text/csv; charset=utf-8",
+        _csv_of(xw.control_rows),
+    ),
+    "determinations.csv": Export(
+        "Agency determinations",
+        "Only the controls the package does not settle, each with FedRAMP's agency actions.",
+        "text/csv; charset=utf-8",
+        _csv_of(xw.determination_rows),
+    ),
+    "register.csv": Export(
+        "Vulnerability register",
+        "One row per provider tracking ID; the newest report decides each row.",
+        "text/csv; charset=utf-8",
+        _csv_of(xw.register_rows),
+        needs_vulnerabilities=True,
+    ),
+    "oscal-ssp.json": Export(
+        "OSCAL SSP skeleton",
+        "OSCAL 1.1.2 system security plan for the agency system, with the service as one "
+        "component. Agency fields read AGENCY TO COMPLETE; implementation status only where "
+        "the provider reports it and every mapped entry is reported.",
+        "application/json",
+        lambda model, generated, scope: _json(
+            xw.oscal_ssp(model, generated=generated, scope=scope)
+        ),
+    ),
+    "oscal-poam.json": Export(
+        "OSCAL POA&M",
+        "OSCAL 1.1.2 plan of action and milestones from the vulnerability register. An "
+        "accepted vulnerability is exported as open, not as an approved deviation.",
+        "application/json",
+        lambda model, generated, scope: _json(
+            xw.oscal_poam(model, generated=generated, scope=scope)
+        ),
+        needs_vulnerabilities=True,
+    ),
 }
+
+#: A standalone report must not load anything, wherever it is opened.
+REPORT_CSP = "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'"
 
 
 def _can(request: Request, *roles: str) -> bool:
@@ -81,13 +181,39 @@ def _model(
         return None, str(exc)
 
 
-def _csv(model: xw.Model, table: str, stem: str) -> Response:
-    rows = EXPORTS[table](model)
-    filename = f"{stem}-{table}-class-{model.cls.lower()}.csv"
-    return Response(
-        xw.to_csv(rows),
-        media_type="text/csv; charset=utf-8",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+def _export(model: xw.Model, name: str, stem: str) -> Response:
+    """The download ``name`` (already checked to be in :data:`EXPORTS`)."""
+    spec = EXPORTS[name]
+    if spec.needs_vulnerabilities and not model.has_vulnerability_files:
+        raise HTTPException(
+            409,
+            f"{spec.label} needs a vulnerability file (VDR, accepted-vulnerability or "
+            "history); the package holds none.",
+        )
+    try:
+        body = spec.build(model, datetime.now(UTC), stem)
+    except xw.CrosswalkError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    base, _, ext = name.rpartition(".")
+    filename = f"{stem}-{base}-class-{model.cls.lower()}.{ext}"
+    headers = {"Content-Disposition": f'attachment; filename="{filename}"'}
+    if ext == "html":
+        headers["Content-Security-Policy"] = REPORT_CSP
+    return Response(body, media_type=spec.media_type, headers=headers)
+
+
+def _schema_errors(docs: dict[str, Any], kept: int | None) -> dict[str, dict[str, Any]]:
+    return {
+        k: xw.schema_errors(r.validation_errors, kept) for k, r in docs.items() if not r.is_valid
+    }
+
+
+def _package_text(docs: dict[str, Any]) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    """The overview and latest ongoing report, shown whether or not a class is chosen."""
+    cpo, ocr = docs.get("cpo"), docs.get("ocr")
+    return (
+        xw.package_overview(cpo.document if cpo is not None else None),
+        xw.ongoing_report(ocr.document if ocr is not None else None),
     )
 
 
@@ -164,6 +290,7 @@ async def agency_view_system(
     model, problem = _model(
         {k: r.document for k, r in docs.items()}, chosen, system.certification_path
     )
+    overview, ongoing = _package_text(docs)
     return templates.TemplateResponse(
         request,
         "agency_view_system.html",
@@ -180,19 +307,23 @@ async def agency_view_system(
             "states": xw.STATES,
             "notice": xw.NOTICE,
             "export_base": f"/systems/{system.id}/agency-view/export",
+            "exports": EXPORTS,
+            "schema_errors": _schema_errors(docs, None),
+            "overview": overview,
+            "ongoing": ongoing,
         },
     )
 
 
-@router.get("/systems/{sid}/agency-view/export/{table}.csv")
+@router.get("/systems/{sid}/agency-view/export/{name}")
 async def agency_view_export(
     sid: int,
-    table: str,
+    name: str,
     cls: str | None = Query(None, max_length=1),
     session: AsyncSession = Depends(get_session),
     principal: Principal = Depends(get_principal),
 ) -> Response:
-    if table not in EXPORTS:
+    if name not in EXPORTS:
         raise HTTPException(404, "no such export")
     system = await require_system_in_scope(session, sid, principal)
     docs = await _system_package(session, system)
@@ -205,7 +336,7 @@ async def agency_view_export(
         raise HTTPException(
             409, problem or "choose a certification class, and store package documents first"
         )
-    return _csv(model, table, f"system-{system.id}")
+    return _export(model, name, f"system-{system.id}")
 
 
 # ── vendor packages ──────────────────────────────────────────────────────────
@@ -300,6 +431,7 @@ async def _vendor_page(
     the POST itself: a result read from the URL could be forged by a link."""
     docs = await _vendor_docs(session, vendor)
     model, problem = _model({k: r.document for k, r in docs.items()}, chosen)
+    overview, ongoing = _package_text(docs)
     return templates.TemplateResponse(
         request,
         "vendor_package.html",
@@ -317,6 +449,10 @@ async def _vendor_page(
             "can_upload": _can(request, *UPLOAD_ROLES),
             "outcome": outcome,
             "export_base": f"/vendors/{vendor.id}/fedramp-package/export",
+            "exports": EXPORTS,
+            "schema_errors": _schema_errors(docs, KEPT_ERRORS),
+            "overview": overview,
+            "ongoing": ongoing,
             "max_mb": MAX_FILE_BYTES // (1024 * 1024),
         },
     )
@@ -383,7 +519,7 @@ async def vendor_package_upload(
         row.sha256 = hashlib.sha256(data).hexdigest()
         row.size_bytes = len(data)
         row.is_valid = report.ok
-        row.validation_errors = report.errors[:50]
+        row.validation_errors = report.errors[:KEPT_ERRORS]
         row.uploaded_by = principal.email
         await session.flush()
         await record_event(
@@ -470,15 +606,15 @@ async def vendor_package_delete(
     return RedirectResponse(f"/vendors/{vendor.id}/fedramp-package", status_code=303)
 
 
-@router.get("/vendors/{vid}/fedramp-package/export/{table}.csv")
+@router.get("/vendors/{vid}/fedramp-package/export/{name}")
 async def vendor_package_export(
     request: Request,
     vid: int,
-    table: str,
+    name: str,
     cls: str | None = Query(None, max_length=1),
     session: AsyncSession = Depends(get_session),
 ) -> Response:
-    if table not in EXPORTS:
+    if name not in EXPORTS:
         raise HTTPException(404, "no such export")
     org = _principal_org(request)
     if org is None:
@@ -490,4 +626,4 @@ async def vendor_package_export(
         raise HTTPException(
             409, problem or "choose a certification class, and upload package documents first"
         )
-    return _csv(model, table, f"vendor-{vendor.id}")
+    return _export(model, name, f"vendor-{vendor.id}")
