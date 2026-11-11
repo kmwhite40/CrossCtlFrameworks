@@ -8,6 +8,7 @@ concord-rls-masks-tenant-tests). FedRAMP's sample package
 
 from __future__ import annotations
 
+import io
 import itertools
 import json
 import os
@@ -18,6 +19,8 @@ import pytest
 from alembic import command
 from alembic.config import Config
 from httpx import ASGITransport, AsyncClient
+from markupsafe import escape
+from openpyxl import load_workbook
 from sqlalchemy import func, select
 from sqlalchemy.exc import DBAPIError
 
@@ -31,6 +34,7 @@ from ccf.fedramp20x import crosswalk as xw
 from ccf.models import AuditLog, Organization, System, User, Vendor
 from ccf.models_cr26 import Cr26Document
 from ccf.models_tprm import VendorCertDocument
+from ccf.oscal.validation import validate_document
 
 pytestmark = pytest.mark.usefixtures("fresh_engine")
 
@@ -467,3 +471,234 @@ async def test_the_preview_applies_the_systems_recorded_path(two_orgs) -> None:
         ).text
     assert "Program path" in page
     assert "the certification path is not known" not in page
+
+
+# ── overview, schema errors and exports ──────────────────────────────────────
+
+EXPORT_TYPES = {
+    "review.xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "report.html": "text/html",
+    "controls.csv": "text/csv",
+    "determinations.csv": "text/csv",
+    "register.csv": "text/csv",
+    "oscal-ssp.json": "application/json",
+    "oscal-poam.json": "application/json",
+}
+
+
+def test_every_export_is_listed_here() -> None:
+    assert set(EXPORT_TYPES) == set(ui_crosswalk.EXPORTS)
+
+
+def _bases(a: dict[str, Any]) -> list[str]:
+    return [
+        f"/vendors/{a['vendor']}/fedramp-package/export",
+        f"/systems/{a['system']}/agency-view/export",
+    ]
+
+
+async def test_a_viewer_downloads_every_export_on_both_pages_but_cannot_upload(two_orgs) -> None:
+    a, _ = two_orgs
+    h = _auth(a["tokens"]["viewer"])
+    async with _client() as c:
+        await _upload(c, a["vendor"], a["tokens"]["admin"], _files())
+        for base in _bases(a):
+            for name, ctype in EXPORT_TYPES.items():
+                resp = await c.get(f"{base}/{name}?cls=C", headers=h)
+                assert resp.status_code == 200, (base, name, resp.text[:200])
+                assert resp.headers["content-type"].startswith(ctype), name
+                disposition = resp.headers["content-disposition"]
+                assert disposition.startswith("attachment;") and disposition.endswith(
+                    f'-class-c.{name.rsplit(".", 1)[1]}"'
+                )
+        assert (await _upload(c, a["vendor"], a["tokens"]["viewer"], _files())).status_code == 403
+
+
+async def test_the_exports_carry_the_notice_and_validate(two_orgs) -> None:
+    a, _ = two_orgs
+    h = _auth(a["tokens"]["viewer"])
+    base = f"/vendors/{a['vendor']}/fedramp-package/export"
+    async with _client() as c:
+        await _upload(c, a["vendor"], a["tokens"]["admin"], _files())
+        got = {n: await c.get(f"{base}/{n}?cls=C", headers=h) for n in EXPORT_TYPES}
+    for name, kind in (("oscal-ssp.json", "ssp"), ("oscal-poam.json", "poam")):
+        doc = got[name].json()
+        report = validate_document(doc, kind)
+        assert report.mode == "official" and report.ok, report.errors[:5]
+        assert xw.NOTICE in json.dumps(doc)
+    report = got["report.html"]
+    notice = str(escape(xw.NOTICE))
+    # At the head, before any control, and again at the end.
+    assert report.text.count(notice) == 2 and "AC Access Control" in report.text
+    assert report.text.index(notice) < report.text.index("<h2>")
+    assert "default-src 'none'" in report.headers["content-security-policy"]
+    assert "<script" not in report.text.lower() and "<link" not in report.text.lower()
+    wb = load_workbook(io.BytesIO(got["review.xlsx"].content))
+    assert wb.sheetnames[0] == "Summary"
+    assert xw.NOTICE in [r[1] for r in wb["Summary"].iter_rows(values_only=True)]
+
+
+async def test_package_text_in_the_report_is_escaped(two_orgs) -> None:
+    a, _ = two_orgs
+    cpo = json.loads(next(d for n, d in _files() if "overview" in n))
+    cpo["serviceIdentification"]["serviceName"] = "<script>alert(1)</script>"
+    async with _client() as c:
+        await _upload(
+            c, a["vendor"], a["tokens"]["admin"], [("cpo.json", json.dumps(cpo).encode())]
+        )
+        report = await c.get(
+            f"/vendors/{a['vendor']}/fedramp-package/export/report.html?cls=C",
+            headers=_auth(a["tokens"]["viewer"]),
+        )
+        page = await c.get(
+            f"/vendors/{a['vendor']}/fedramp-package?cls=C", headers=_auth(a["tokens"]["viewer"])
+        )
+    assert "<script>alert(1)</script>" not in report.text
+    assert "&lt;script&gt;alert(1)&lt;/script&gt;" in report.text
+    assert "<script>alert(1)</script>" not in page.text
+
+
+async def test_another_organizations_exports_are_not_found(two_orgs) -> None:
+    a, b = two_orgs
+    h = _auth(a["tokens"]["admin"])
+    async with _client() as c:
+        await _upload(c, b["vendor"], b["tokens"]["admin"], _files())
+        for base in _bases(b):
+            for name in EXPORT_TYPES:
+                resp = await c.get(f"{base}/{name}?cls=C", headers=h)
+                assert resp.status_code == 404, (base, name)
+        # and a name that is not an export is not found either
+        for own in _bases(a):
+            assert (await c.get(f"{own}/secrets.txt?cls=C", headers=h)).status_code == 404
+
+
+async def test_register_and_poam_exports_are_refused_without_vulnerability_files(two_orgs) -> None:
+    a, _ = two_orgs
+    h = _auth(a["tokens"]["viewer"])
+    sdr = next((n, d) for n, d in _files() if "security-decision" in n)
+    base = f"/vendors/{a['vendor']}/fedramp-package"
+    async with _client() as c:
+        await _upload(c, a["vendor"], a["tokens"]["admin"], [sdr])
+        page = (await c.get(f"{base}?cls=C", headers=h)).text
+        refused = {
+            n: await c.get(f"{base}/export/{n}?cls=C", headers=h)
+            for n in ("register.csv", "oscal-poam.json")
+        }
+        kept = await c.get(f"{base}/export/review.xlsx?cls=C", headers=h)
+    for resp in refused.values():
+        assert resp.status_code == 409 and "holds none" in resp.json()["detail"]
+    assert kept.status_code == 200
+    assert "not available" in page and "nothing to export" in page
+    assert f'href="{base}/export/oscal-poam.json' not in page
+    assert f'href="{base}/export/oscal-ssp.json?cls=C"' in page
+
+
+async def test_a_poam_is_refused_when_the_files_list_no_vulnerabilities(two_orgs) -> None:
+    a, _ = two_orgs
+    h = _auth(a["tokens"]["viewer"])
+    vdr = json.loads(next(d for n, d in _files() if "vulnerability-detail" in n))
+    vdr["vulnerabilities"] = []
+    base = f"/vendors/{a['vendor']}/fedramp-package"
+    async with _client() as c:
+        await _upload(
+            c, a["vendor"], a["tokens"]["admin"], [("vdr.json", json.dumps(vdr).encode())]
+        )
+        page = (await c.get(f"{base}?cls=C", headers=h)).text
+        poam = await c.get(f"{base}/export/oscal-poam.json?cls=C", headers=h)
+        register = await c.get(f"{base}/export/register.csv?cls=C", headers=h)
+    assert poam.status_code == 409 and "list no vulnerabilities" in poam.json()["detail"]
+    assert register.status_code == 200  # a header-only register is true: none listed
+    assert "vulnerability files list no vulnerabilities" in page
+
+
+async def test_both_pages_show_the_overview_and_the_latest_ongoing_report(two_orgs) -> None:
+    a, _ = two_orgs
+    h = _auth(a["tokens"]["viewer"])
+    async with _client() as c:
+        await _upload(c, a["vendor"], a["tokens"]["admin"], _files())
+        pages = [
+            (await c.get(f"/vendors/{a['vendor']}/fedramp-package", headers=h)).text,
+            (await c.get(f"/systems/{a['system']}/agency-view", headers=h)).text,
+        ]
+    for page in pages:
+        for text in (
+            "Government-Only Cloud",
+            "Beacon Assurance Partners, LLC",
+            "2026-10-15",
+            'href="https://trust.meridianfed.com/mocp"',
+            "F0009182736",
+            "SendSecure Notifications",
+            "Latest ongoing report",
+            "2026-04-01 to 2026-06-30",
+            "Changes planned through 2026-12-31",
+            "credential-stuffing",
+            "Reduced the automated account-lockout threshold",
+            "Small Business Administration",
+            "One accepted vulnerability remains open",
+        ):
+            assert text in page, text
+        # Transformative changes: the report lists none, and the page says so.
+        assert 'Transformative changes</dt><dd><span class="dim">none reported' in page
+
+
+async def test_a_non_http_url_in_the_package_is_never_a_link(two_orgs) -> None:
+    a, _ = two_orgs
+    cpo = json.loads(next(d for n, d in _files() if "overview" in n))
+    cpo["serviceProperties"]["trustCenter"]["url"] = "javascript:alert(document.cookie)"
+    cpo["thirdPartyInformationResources"]["nonCertified"][0]["website"] = "data:text/html,x"
+    async with _client() as c:
+        await _upload(
+            c, a["vendor"], a["tokens"]["admin"], [("cpo.json", json.dumps(cpo).encode())]
+        )
+        page = (
+            await c.get(
+                f"/vendors/{a['vendor']}/fedramp-package", headers=_auth(a["tokens"]["viewer"])
+            )
+        ).text
+    assert "javascript:alert(document.cookie)" in page  # shown, as text
+    assert 'href="javascript:' not in page and 'href="data:' not in page
+
+
+async def test_each_schema_error_is_listed_with_its_path(two_orgs) -> None:
+    a, _ = two_orgs
+    sdr = json.loads(next(d for n, d in _files() if "security-decision" in n))
+    sdr["keySecurityIndicators"] = [
+        {**sdr["keySecurityIndicators"][0], "ksiImplementationStatus": "Totally"} for _ in range(30)
+    ]
+    async with _client() as c:
+        await _upload(
+            c, a["vendor"], a["tokens"]["admin"], [("bad.json", json.dumps(sdr).encode())]
+        )
+        page = (
+            await c.get(
+                f"/vendors/{a['vendor']}/fedramp-package", headers=_auth(a["tokens"]["viewer"])
+            )
+        ).text
+    errors = (await _docs(a["vendor"]))["sdr"].validation_errors
+    assert len(errors) > xw.SHOWN_ERRORS
+    path, _, _message = errors[0].partition(": ")
+    assert f'<span class="mono">{path}</span>' in page
+    assert f"and {len(errors) - xw.SHOWN_ERRORS} more" in page
+    if len(errors) == ui_crosswalk.KEPT_ERRORS:
+        assert f"at least {len(errors)} schema errors" in page
+    else:
+        assert f"{len(errors)} schema errors" in page and "at least" not in page
+
+
+async def test_a_capped_error_list_is_not_shown_as_an_exact_count(two_orgs) -> None:
+    a, _ = two_orgs
+    sdr = json.loads(next(d for n, d in _files() if "security-decision" in n))
+    sdr["keySecurityIndicators"] = [
+        {**sdr["keySecurityIndicators"][0], "ksiImplementationStatus": "Totally"} for _ in range(80)
+    ]
+    async with _client() as c:
+        await _upload(
+            c, a["vendor"], a["tokens"]["admin"], [("bad.json", json.dumps(sdr).encode())]
+        )
+        page = (
+            await c.get(
+                f"/vendors/{a['vendor']}/fedramp-package", headers=_auth(a["tokens"]["viewer"])
+            )
+        ).text
+    assert len((await _docs(a["vendor"]))["sdr"].validation_errors) == ui_crosswalk.KEPT_ERRORS
+    assert f"at least {ui_crosswalk.KEPT_ERRORS} schema errors" in page

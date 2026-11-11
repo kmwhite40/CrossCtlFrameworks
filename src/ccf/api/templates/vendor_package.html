@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "_crosswalk.html" import crosswalk, class_picker, documents_table %}
+{% from "_crosswalk.html" import crosswalk, class_picker, documents_table, package_overview %}
 {% block title %}{{ vendor.name }} · FedRAMP Package · Concord{% endblock %}
 {% block heading %}{{ vendor.name }}: FedRAMP package{% endblock %}
 {% block subtitle %}The provider's certification package files, checked against FedRAMP's schemas and read against the Rev5 baseline. Files stay in Concord, scoped to your organization.{% endblock %}
@@ -11,7 +11,7 @@
 {% endif %}
 <article class="card panel" style="margin-bottom:16px">
   <header class="panel__head"><h2 class="panel__title">Package documents</h2><span class="panel__hint">a file with schema errors is kept and shown, not silently dropped</span></header>
-  {{ documents_table(docs, kinds) }}
+  {{ documents_table(docs, kinds, schema_errors) }}
   {% if can_upload %}
   <form method="post" action="/vendors/{{ vendor.id }}/fedramp-package" enctype="multipart/form-data" class="filters panel__body">
     <input class="input" type="file" name="files" accept=".json,application/json" multiple required aria-label="Package files">
@@ -21,10 +21,11 @@
   {% if docs %}<div class="panel__body" style="display:flex;flex-wrap:wrap;gap:8px">{% for k, d in docs.items() %}<form method="post" action="/vendors/{{ vendor.id }}/fedramp-package/{{ k }}/delete"><button class="btn btn--secondary" type="submit" title="Remove {{ d.filename }}"><i data-lucide="trash-2"></i>Remove {{ kinds[k] }}</button></form>{% endfor %}</div>{% endif %}
   {% endif %}
 </article>
+{{ package_overview(overview, ongoing) }}
 {% if docs %}
 {{ class_picker('/vendors/' ~ vendor.id ~ '/fedramp-package', classes, chosen_class, 'Read against the Rev5 baseline for') }}
 {% if problem %}<div class="note note--warn" role="status">{{ problem }}</div>{% endif %}
-{% if model %}{{ crosswalk(model, states, notice, export_base) }}
+{% if model %}{{ crosswalk(model, states, notice, export_base, exports) }}
 {% elif not chosen_class %}<p class="dim">The package does not state its certification class. Choose the one the vendor was certified at.</p>{% endif %}
 {% endif %}
 {% endblock %}

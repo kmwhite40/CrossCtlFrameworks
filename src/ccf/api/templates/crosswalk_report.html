@@ -1,0 +1,81 @@
+<!doctype html>
+{# Standalone, printable crosswalk report. Autoescaped; no external resources (the response also carries a CSP). Context: model, states, notice, families, family_names, generated, kinds. #}
+{% set i = model.identity %}
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Control inheritance view: {{ i.service or 'FedRAMP package' }}</title>
+<style>
+body{font:11pt/1.45 Calibri,Arial,sans-serif;color:#111;background:#fff;margin:2em auto;max-width:1100px;padding:0 16px}
+h1{font-size:20pt;margin:0 0 .2em}h2{font-size:14pt;margin:1.6em 0 .4em;border-bottom:1px solid #999}h3{font-size:12pt;margin:1em 0 .3em}
+table{border-collapse:collapse;width:100%;margin:.5em 0}th,td{border:1px solid #999;padding:4px 6px;vertical-align:top;text-align:left;font-size:9.5pt}th{background:#eee}
+.n{border:1px solid #999;padding:.6em .8em;background:#f6f6f6}.id{font-family:Consolas,monospace;white-space:nowrap}p{margin:0 0 .4em}.dim{color:#555}
+dl{display:grid;grid-template-columns:14em 1fr;gap:.2em 1em}dt{font-weight:bold}dd{margin:0}
+@media print{body{margin:0}h2{break-after:avoid}tr{break-inside:avoid}}
+</style>
+</head>
+<body>
+<h1>Control inheritance view</h1>
+<p><strong>{{ i.service or 'Service not named' }}</strong>{% if i.provider %}, {{ i.provider }}{% endif %}. Package {{ i.package_id or '(no package ID)' }}. {% if model.certification_type %}{{ model.certification_type }} certification{% else %}Certification type not stated in the package{% endif %}{% if model.certification_path %}, {{ model.certification_path }} path{% endif %}, compared against the Rev5 Class {{ model.cls }} baseline ({{ model.total }} controls). FedRAMP rules {{ model.rules_version }}. Generated {{ generated }}.</p>
+<p class="n">{{ notice }}</p>
+
+<table>
+  <tr>{% for key, label in states.items() %}<th>{{ label[0] }}</th>{% endfor %}</tr>
+  <tr>{% for key, label in states.items() %}<td>{{ model.counts[key] }}</td>{% endfor %}</tr>
+  <tr>{% for key, label in states.items() %}<td class="dim">{{ label[1] }}</td>{% endfor %}</tr>
+</table>
+
+{% set k = model.completeness.ksi %}{% set f = model.completeness.frr %}
+<p><strong>Key Security Indicators:</strong> {% if k.expected is none %}not known which are owed{% elif k.expected %}{{ k.reported }} of {{ k.expected }} required reported{% else %}none required{% endif %}. <span class="dim">{{ k.basis }}</span></p>
+<p><strong>FedRAMP rules:</strong> {% if f.expected is none %}not known which apply: the package does not state whether it is a Rev5 or 20x certification.{% else %}{{ f.reported }} of {{ f.expected }} applicable reported.{% endif %}</p>
+
+{% set o = model.overview %}
+{% if o %}
+<h2>Service</h2>
+{% if o.description %}<p style="white-space:pre-line">{{ o.description }}</p>{% endif %}
+<dl>
+  {% if o.service_model %}<dt>Service model</dt><dd>{{ o.service_model }}</dd>{% endif %}
+  {% if o.deployment_model %}<dt>Deployment model</dt><dd>{{ o.deployment_model }}</dd>{% endif %}
+  {% if o.assessor %}<dt>Assessor</dt><dd>{{ o.assessor }}{% if o.assessor_id %} ({{ o.assessor_id }}){% endif %}</dd>{% endif %}
+  {% if o.next_ongoing_report %}<dt>Next ongoing report</dt><dd>{{ o.next_ongoing_report }}</dd>{% endif %}
+  {% if o.trust_center %}<dt>Trust center</dt><dd>{{ o.trust_center.url }}</dd>{% endif %}
+  {% if o.secure_configuration %}<dt>Secure configuration guide</dt><dd>{{ o.secure_configuration.url }}</dd>{% endif %}
+</dl>
+{% endif %}
+
+{% for fam, rows in families.items() %}
+<h2>{{ fam }} {{ family_names.get(fam, '') }}</h2>
+<table>
+  <tr><th>Control</th><th>Coverage</th><th>What the package says</th><th>What stays with the agency</th></tr>
+  {% for c in rows %}<tr>
+    <td><span class="id">{{ c.id }}</span><br>{{ c.title }}</td>
+    <td>{{ states[c.state][0] }}</td>
+    <td>{% if c.direct %}<p>{{ c.id }} ({{ c.direct.status or 'no status given' }}): {{ c.direct.implementation | join(' ') }}</p>{% endif %}
+      {% for x in c.ksi + c.frr %}<p>{% if x.entry %}{{ x.id }} {{ x.name }} ({{ x.entry.status or 'no status given' }}): {{ x.entry.implementation | join(' ') }}{% else %}{{ x.id }} {{ x.name }}: not in this package{% endif %}</p>{% endfor %}
+      {% if not c.direct and not (c.ksi + c.frr) %}Nothing maps to this control.{% endif %}</td>
+    <td>{% for g in c.guidance %}{% if g.agency_actions %}<p>{% if g.part != '_' %}({{ g.part }}) {% endif %}{{ g.agency_actions }}</p>{% endif %}{% endfor %}</td>
+  </tr>{% endfor %}
+</table>
+{% endfor %}
+
+<h2>Vulnerability register</h2>
+{% if not model.has_vulnerability_files %}<p>The package holds no vulnerability files (VDR, accepted-vulnerability or history).</p>
+{% elif not model.register %}<p>The package's vulnerability files list no vulnerabilities.</p>
+{% else %}
+<table>
+  <tr><th>Tracking ID</th><th>Status</th><th>N-rating</th><th>Description</th><th>Overdue</th><th>As of</th></tr>
+  {% for v in model.register %}<tr>
+    <td class="id">{{ v.id }}</td>
+    <td>{{ v.status }}{% if v.status == 'Accepted' %} <span class="dim">(by the provider)</span>{% endif %}</td>
+    <td>{% if v.rating is not none %}N{{ v.rating }}{% endif %}</td>
+    <td>{{ v.description }}{% if v.rationale %}<p class="dim">Accepted because: {{ v.rationale }}</p>{% endif %}</td>
+    <td>{% if v.overdue %}Overdue{% if v.overdue_why %}: {{ v.overdue_why }}{% endif %}{% else %}No{% endif %}</td>
+    <td>{{ v.as_of[:10] }}</td>
+  </tr>{% endfor %}
+</table>
+{% endif %}
+<p class="n">{{ notice }}</p>
+</body>
+</html>

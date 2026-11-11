@@ -1,7 +1,7 @@
-{# The crosswalk of one certification package. Context: model, states, notice, export_base, cls_param. #}
+{# The crosswalk of one certification package. Package text is autoescaped and never marked safe; a URL becomes a link only when the engine's safe_url accepted it (the "href" keys). #}
 {% macro state_chip(states, s) %}<span class="chip {% if s == 'documented' or s == 'traced' %}chip--ok{% elif s == 'partly_reported' %}chip--info{% elif s == 'needs_review' %}chip--warn{% elif s == 'not_reported' %}chip--err{% else %}chip--ghost{% endif %}" title="{{ states[s][1] }}">{{ states[s][0] }}</span>{% endmacro %}
 
-{% macro crosswalk(model, states, notice, export_base) %}
+{% macro crosswalk(model, states, notice, export_base, exports) %}
 <div class="note" role="note" style="margin-bottom:16px">{{ notice }}</div>
 
 <section class="kpi-grid kpi-grid--4" aria-label="Coverage by state">
@@ -30,7 +30,7 @@
 
 <article class="card panel" style="margin-top:16px" id="controls">
   <header class="panel__head"><h2 class="panel__title">Controls</h2>
-    <span class="panel__hint"><a href="{{ export_base }}/controls.csv?cls={{ model.cls }}">Controls CSV</a> · <a href="{{ export_base }}/determinations.csv?cls={{ model.cls }}">Agency determinations CSV</a></span></header>
+    <span class="panel__hint"><a href="#exports">Exports</a></span></header>
   <div class="table-wrap"><table>
     <thead><tr><th>Control</th><th>Coverage</th><th>Mapped</th><th>Not reported</th><th>Provider's own entry</th><th>What the agency does</th></tr></thead>
     <tbody>{% for c in model.controls %}<tr id="ctl-{{ c.id }}">
@@ -49,7 +49,7 @@
 
 <article class="card panel" style="margin-top:16px" id="register">
   <header class="panel__head"><h2 class="panel__title">Vulnerability register</h2>
-    <span class="panel__hint">{% if model.register %}<a href="{{ export_base }}/register.csv?cls={{ model.cls }}">Register CSV</a> · {% endif %}one row per provider tracking ID; the newest report decides each row</span></header>
+    <span class="panel__hint">one row per provider tracking ID; the newest report decides each row</span></header>
   {% if model.register %}
   <div class="table-wrap"><table>
     <thead><tr><th>Tracking ID</th><th>Status</th><th>N-rating</th><th>Description</th><th>Overdue</th><th>As of</th><th>Reported in</th></tr></thead>
@@ -63,8 +63,64 @@
       <td class="dim" style="font-size:12px">{{ v.sources | join('; ') }}</td>
     </tr>{% endfor %}</tbody>
   </table></div>
+  {% elif model.has_vulnerability_files %}<div class="panel__body"><p class="dim">The package's vulnerability files list no vulnerabilities.</p></div>
   {% else %}<div class="panel__body"><p class="dim">The package holds no vulnerability report (VDR, accepted-vulnerability or history file).</p></div>{% endif %}
 </article>
+
+<article class="card panel" style="margin-top:16px" id="exports">
+  <header class="panel__head"><h2 class="panel__title">Exports</h2>
+    <span class="panel__hint">built from the stored package against the Class {{ model.cls }} baseline</span></header>
+  <div class="panel__body">
+    <p class="dim">{{ notice }}</p>
+    <ul class="feed">{% for name, x in exports.items() %}{% set off = x.needs_vulnerabilities and not model.has_vulnerability_files %}{% set empty_poam = name == 'oscal-poam.json' and model.has_vulnerability_files and not model.register %}
+      <li class="feed__item">{% if off or empty_poam %}<strong>{{ x.label }}</strong> <span class="mono dim">{{ name }}</span> · <span class="chip chip--ghost">not available</span>{% else %}<a href="{{ export_base }}/{{ name }}?cls={{ model.cls }}"><strong>{{ x.label }}</strong></a> <span class="mono dim">{{ name }}</span>{% endif %}
+        <div class="dim" style="font-size:12px">{{ x.what }}{% if off %} The package holds no vulnerability file (VDR, accepted-vulnerability or history), so there is nothing to export.{% elif empty_poam %} The vulnerability files list no vulnerabilities; an OSCAL POA&amp;M needs at least one item.{% endif %}</div></li>
+    {% endfor %}</ul>
+  </div>
+</article>
+{% endmacro %}
+
+{% macro _link(url, href) %}{% if href %}<a href="{{ href }}" rel="noopener noreferrer" target="_blank">{{ url }}</a>{% else %}<span class="mono" title="Not an http(s) address, so not linked">{{ url }}</span>{% endif %}{% endmacro %}
+
+{% macro _repo(r) %}{% if r %}{% if r.url %}{{ _link(r.url, r.href) }}{% else %}<span class="dim">no address given</span>{% endif %}{% if r.auth_required %} <span class="chip chip--ghost">sign-in required</span>{% endif %}{% if r.description %}<div class="dim" style="font-size:12px">{{ r.description }}</div>{% endif %}{% else %}<span class="dim">not stated</span>{% endif %}{% endmacro %}
+
+{% macro _list(items, empty) %}{% if items is none %}<span class="dim">not stated in the report</span>{% elif not items %}<span class="dim">{{ empty }}</span>{% else %}<ul>{% for t in items %}<li>{{ t }}</li>{% endfor %}</ul>{% endif %}{% endmacro %}
+
+{% macro package_overview(o, r) %}
+{% if o %}
+<article class="card panel" style="margin-bottom:16px" id="overview">
+  <header class="panel__head"><h2 class="panel__title">Service</h2><span class="panel__hint">as the Certification Package Overview states it</span></header>
+  <div class="panel__body">
+    {% if o.description %}<p style="white-space:pre-line">{{ o.description }}</p>{% endif %}
+    <dl style="display:grid;grid-template-columns:minmax(0,max-content) 1fr;gap:8px 14px;font-size:13px;overflow-wrap:anywhere">
+      <dt>Service model</dt><dd>{{ o.service_model or 'not stated' }}</dd>
+      <dt>Deployment model</dt><dd>{{ o.deployment_model or 'not stated' }}</dd>
+      <dt>Assessor</dt><dd>{% if o.assessor %}{{ o.assessor }}{% if o.assessor_id %} <span class="dim">({{ o.assessor_id }})</span>{% endif %}{% else %}not stated{% endif %}</dd>
+      <dt>Next ongoing report</dt><dd>{{ o.next_ongoing_report or 'not stated' }}</dd>
+      <dt>Trust center</dt><dd>{{ _repo(o.trust_center) }}</dd>
+      <dt>Secure configuration guide</dt><dd>{{ _repo(o.secure_configuration) }}</dd>
+      <dt>Certified services it depends on</dt><dd>{% if o.certified_third_party is none %}<span class="dim">not stated</span>{% elif not o.certified_third_party %}<span class="dim">none listed</span>{% else %}<ul>{% for t in o.certified_third_party %}<li><span class="mono">{{ t.id }}</span>{% if t.use_case %}<div class="dim" style="font-size:12px">{{ t.use_case }}</div>{% endif %}</li>{% endfor %}</ul>{% endif %}</dd>
+      <dt>Services it uses that are not certified</dt><dd>{% if o.non_certified_third_party is none %}<span class="dim">not stated</span>{% elif not o.non_certified_third_party %}<span class="dim">none listed</span>{% else %}<ul>{% for t in o.non_certified_third_party %}<li>{{ t.name }}{% if t.provider %} <span class="dim">by {{ t.provider }}</span>{% endif %}{% if t.website %} · {{ _link(t.website, t.href) }}{% endif %}{% if t.use_case %}<div class="dim" style="font-size:12px">{{ t.use_case }}</div>{% endif %}</li>{% endfor %}</ul>{% endif %}</dd>
+    </dl>
+  </div>
+</article>
+{% endif %}
+{% if r %}
+<article class="card panel" style="margin-bottom:16px" id="ongoing">
+  <header class="panel__head"><h2 class="panel__title">Latest ongoing report</h2><span class="panel__hint">{% if r.period_from or r.period_to %}{{ r.period_from or '?' }} to {{ r.period_to or '?' }}{% else %}report period not stated{% endif %}</span></header>
+  <div class="panel__body">
+    <dl style="display:grid;grid-template-columns:minmax(0,max-content) 1fr;gap:8px 14px;font-size:13px;overflow-wrap:anywhere">
+      <dt>Changes made</dt><dd>{{ _list(r.changes, 'none reported') }}</dd>
+      <dt>Changes planned{% if r.planned_through %} through {{ r.planned_through }}{% endif %}</dt><dd>{{ _list(r.planned, 'none reported') }}</dd>
+      <dt>Transformative changes</dt><dd>{{ _list(r.transformative, 'none reported') }}</dd>
+      <dt>Accepted vulnerabilities</dt><dd>{% if r.accepted_vulnerabilities %}<span style="white-space:pre-line">{{ r.accepted_vulnerabilities }}</span>{% else %}<span class="dim">not stated in the report</span>{% endif %}</dd>
+      <dt>Reportable incidents</dt><dd>{% if r.incidents is none %}<span class="dim">not stated in the report</span>{% elif not r.incidents %}<span class="dim">none reported</span>{% else %}<ul>{% for i in r.incidents %}<li>{{ i.summary or 'No summary given.' }}{% if i.occurred_at %} <span class="dim">occurred {{ i.occurred_at[:10] }}</span>{% endif %}{% if i.resolved_at %} <span class="dim">· resolved {{ i.resolved_at[:10] }}</span>{% endif %}{% if i.lessons %}<div class="dim" style="font-size:12px">Lessons learned:</div><ul>{% for t in i.lessons %}<li>{{ t }}</li>{% endfor %}</ul>{% endif %}</li>{% endfor %}</ul>{% endif %}</dd>
+      <dt>New recommendations for customers</dt><dd>{{ _list(r.recommendations, 'none reported') }}</dd>
+      <dt>Agencies using the service</dt><dd>{{ _list(r.agencies, 'none listed') }}</dd>
+    </dl>
+  </div>
+</article>
+{% endif %}
 {% endmacro %}
 
 {% macro class_picker(action, classes, chosen, label) %}
@@ -75,13 +131,14 @@
 </form>
 {% endmacro %}
 
-{% macro documents_table(docs, kinds) %}
+{% macro documents_table(docs, kinds, schema_errors) %}
 <div class="table-wrap"><table>
   <thead><tr><th>Document</th><th>Held</th><th>Schema</th></tr></thead>
   <tbody>{% for k, label in kinds.items() %}{% set d = docs.get(k) %}<tr>
     <td>{{ label }}</td>
     <td>{% if d %}<span class="chip chip--ok">held</span>{% else %}<span class="dim">not held</span>{% endif %}</td>
-    <td>{% if d %}{% if d.is_valid %}<span class="chip chip--ok">valid</span>{% else %}<span class="chip chip--warn" title="{{ (d.validation_errors or [])[:3] | join(' · ') }}">{{ (d.validation_errors or []) | length }} schema error{{ 's' if (d.validation_errors or []) | length != 1 }}</span>{% endif %}{% else %}<span class="dim">—</span>{% endif %}</td>
+    <td>{% if d %}{% if d.is_valid %}<span class="chip chip--ok">valid</span>{% else %}{% set e = schema_errors.get(k) %}<span class="chip chip--warn">{% if e.capped %}at least {% endif %}{{ e.count }} schema error{{ 's' if e.count != 1 }}</span>
+      {% if e.shown %}<details><summary class="dim" style="font-size:12px">What the schema check found{% if e.capped %} (only the first {{ e.count }} are kept){% endif %}</summary><ul class="feed">{% for x in e.shown %}<li class="feed__item" style="font-size:12px">{% if x.path %}<span class="mono">{{ x.path }}</span> {% endif %}{{ x.message }}</li>{% endfor %}{% if e.more %}<li class="feed__item dim" style="font-size:12px">and {{ e.more }} more</li>{% endif %}</ul></details>{% endif %}{% endif %}{% else %}<span class="dim">—</span>{% endif %}</td>
   </tr>{% endfor %}</tbody>
 </table></div>
 {% endmacro %}

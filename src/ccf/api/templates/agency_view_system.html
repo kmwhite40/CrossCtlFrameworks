@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "_crosswalk.html" import crosswalk, class_picker, documents_table %}
+{% from "_crosswalk.html" import crosswalk, class_picker, documents_table, package_overview %}
 {% block title %}Agency View · {{ system.name }} · Concord{% endblock %}
 {% block heading %}Agency view: {{ system.name }}{% endblock %}
 {% block subtitle %}This system's stored FedRAMP certification package, read the way an agency reviewer reads it. A mapped indicator or rule shows where to look, not that a control is satisfied.{% endblock %}
@@ -7,8 +7,9 @@
 {% block content %}
 <article class="card panel" style="margin-bottom:16px">
   <header class="panel__head"><h2 class="panel__title">Package documents</h2><span class="panel__hint">as stored for this system</span></header>
-  {{ documents_table(docs, kinds) }}
+  {{ documents_table(docs, kinds, schema_errors) }}
 </article>
+{{ package_overview(overview, ongoing) }}
 {% if not docs.get('sdr') %}
 <div class="note note--warn" role="status"><strong>No Security Decision Record is stored.</strong> Without one, every control reads as not reported or unmapped. Seed and author the SDR on the system's FedRAMP 20x page first.</div>
 {% endif %}
@@ -19,6 +20,6 @@
 {% if problem %}<div class="note note--warn" role="status">{{ problem }}</div>{% endif %}
 {% if model %}
 {% if assumed_class %}<p class="dim">Previewing as Class {{ model.cls }} (assumed, not recorded).</p>{% endif %}
-{{ crosswalk(model, states, notice, export_base) }}
+{{ crosswalk(model, states, notice, export_base, exports) }}
 {% endif %}
 {% endblock %}
