@@ -240,3 +240,64 @@ def test_exports_do_not_mutate_the_package() -> None:
     xw.to_csv(xw.control_rows(model))
     xw.to_csv(xw.register_rows(model))
     assert pkg == before
+
+
+# ── the independent review's findings ───────────────────────────────────────
+
+
+def test_a_package_without_a_stated_type_is_not_read_as_20x() -> None:
+    """With no CPO, KSI and rule gaps cannot be known: a Rev5 package owes no KSIs."""
+    pkg = _sample()
+    del pkg["cpo"]
+    model = xw.build_model(pkg, "C")
+    assert model.certification_type is None
+    assert model.completeness["ksi"]["expected"] is None
+    assert model.completeness["ksi"]["missing"] == []
+    assert "does not state its certification type" in model.completeness["ksi"]["basis"]
+    assert model.completeness["frr"]["expected"] is None
+    # Coverage per control does not depend on the type.
+    assert sum(model.counts.values()) == model.total
+
+
+def test_a_known_path_narrows_the_rules_a_provider_owes() -> None:
+    pkg = _sample()
+    pkg["cpo"]["serviceIdentification"]["certificationType"] = "Rev5"
+    either = xw.build_model(pkg, "C").completeness["frr"]
+    program = xw.build_model(pkg, "C", path="program").completeness["frr"]
+    assert program["path_applied"] is True and either["path_applied"] is False
+    assert program["expected"] < either["expected"]
+    ref = xw.reference()
+    assert all(not ref.frr[r].paths or "Program" in ref.frr[r].paths for r in program["missing"])
+
+
+def test_the_register_orders_by_instant_not_by_text() -> None:
+    """-04:00 on the 30th is after 01:00Z on the 1st; as text it sorted before."""
+    pkg = {
+        "avi": {
+            "reportPeriod": {"to": "2026-06-30T23:59:59-04:00"},
+            "acceptedVulnerabilities": [
+                {"vulnerabilityDetail": _vuln("V1"), "acceptanceRationale": "r"}
+            ],
+        },
+        "ver_history": {
+            "generatedAt": "2026-07-01T01:00:00Z",
+            "activeVulnerabilities": [_vuln("V1")],
+        },
+    }
+    (row,) = xw.build_register(pkg)
+    assert row["status"] == "Accepted"
+
+
+def test_fractional_seconds_order_as_instants() -> None:
+    pkg = {
+        "vdr": {
+            "reportPeriod": {"to": "2026-07-01T00:00:00.500Z"},
+            "vulnerabilities": [_vuln("V1", currentRating=2)],
+        },
+        "ver_history": {
+            "generatedAt": "2026-07-01T00:00:00Z",
+            "activeVulnerabilities": [_vuln("V1", currentRating=5)],
+        },
+    }
+    (row,) = xw.build_register(pkg)
+    assert row["rating"] == 2

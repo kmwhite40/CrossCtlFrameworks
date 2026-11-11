@@ -14,12 +14,12 @@
 
 <article class="card panel" style="margin-top:16px">
   <header class="panel__head"><h2 class="panel__title">Is the package complete?</h2>
-    <span class="panel__hint">{{ model.certification_type }} certification · FedRAMP rules {{ model.rules_version }}</span></header>
+    <span class="panel__hint">{% if model.certification_type %}{{ model.certification_type }} certification{% else %}certification type not stated{% endif %}{% if model.certification_path %} · {{ model.certification_path }} path{% endif %} · FedRAMP rules {{ model.rules_version }}</span></header>
   <div class="panel__body">
     {% set k = model.completeness.ksi %}{% set f = model.completeness.frr %}
-    <p><strong>Key Security Indicators:</strong> {% if k.expected %}{{ k.reported }} of {{ k.expected }} required reported{% else %}none required{% endif %}. <span class="dim">{{ k.basis }}</span>{% if k.optional %} <span class="dim">{{ k.optional | length }} optional for this class.</span>{% endif %}</p>
+    <p><strong>Key Security Indicators:</strong> {% if k.expected is none %}not known which are owed{% elif k.expected %}{{ k.reported }} of {{ k.expected }} required reported{% else %}none required{% endif %}. <span class="dim">{{ k.basis }}</span>{% if k.optional %} <span class="dim">{{ k.optional | length }} optional for this class.</span>{% endif %}</p>
     {% if k.missing %}<details><summary>{{ k.missing | length }} required indicator{{ 's' if k.missing | length != 1 }} not reported</summary><p class="mono" style="overflow-wrap:anywhere">{{ k.missing | join(', ') }}</p></details>{% endif %}
-    <p><strong>FedRAMP rules:</strong> {{ f.reported }} of {{ f.expected }} applicable reported. <span class="dim">Applicability is read from each rule's type, class and affected parties; effective dates are not checked.</span></p>
+    <p><strong>FedRAMP rules:</strong> {% if f.expected is none %}not known which apply: the package does not state whether it is a Rev5 or 20x certification.{% else %}{{ f.reported }} of {{ f.expected }} applicable reported. <span class="dim">Applicability is read from each rule's type, class{% if f.path_applied %}, path{% endif %} and affected parties{% if not f.path_applied %}; the certification path is not known, so rules for either path are counted{% endif %}; effective dates are not checked.</span>{% endif %}</p>
     {% if f.missing %}<details><summary>{{ f.missing | length }} applicable rule{{ 's' if f.missing | length != 1 }} not reported</summary><p class="mono" style="overflow-wrap:anywhere">{{ f.missing | join(', ') }}</p></details>{% endif %}
     {% if model.unknown.ksi or model.unknown.frr or model.unknown.controls %}
     <p><span class="chip chip--warn">Not recognised</span> The package names {% if model.unknown.ksi %}indicators {{ model.unknown.ksi | join(', ') }}{% endif %}{% if model.unknown.frr %} rules {{ model.unknown.frr | join(', ') }}{% endif %}{% if model.unknown.controls %} control IDs {{ model.unknown.controls | join(', ') }}{% endif %} that FedRAMP's rules {{ model.rules_version }} do not define. They are not counted.</p>

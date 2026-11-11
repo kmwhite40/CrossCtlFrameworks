@@ -70,11 +70,13 @@ def _class(raw: str | None) -> str | None:
     return cls or None
 
 
-def _model(pkg: dict[str, Any], cls: str | None) -> tuple[xw.Model | None, str | None]:
+def _model(
+    pkg: dict[str, Any], cls: str | None, path: str | None = None
+) -> tuple[xw.Model | None, str | None]:
     if cls is None or not any(pkg.get(k) for k in ("sdr", "cpo", "vdr", "avi", "ver_history")):
         return None, None
     try:
-        return xw.build_model(pkg, cls), None
+        return xw.build_model(pkg, cls, path=path), None
     except xw.CrosswalkError as exc:
         return None, str(exc)
 
@@ -159,7 +161,9 @@ async def agency_view_system(
     docs = await _system_package(session, system)
     recorded = system.certification_class
     chosen = recorded or _class(cls)
-    model, problem = _model({k: r.document for k, r in docs.items()}, chosen)
+    model, problem = _model(
+        {k: r.document for k, r in docs.items()}, chosen, system.certification_path
+    )
     return templates.TemplateResponse(
         request,
         "agency_view_system.html",
@@ -193,7 +197,9 @@ async def agency_view_export(
     system = await require_system_in_scope(session, sid, principal)
     docs = await _system_package(session, system)
     model, problem = _model(
-        {k: r.document for k, r in docs.items()}, system.certification_class or _class(cls)
+        {k: r.document for k, r in docs.items()},
+        system.certification_class or _class(cls),
+        system.certification_path,
     )
     if model is None:
         raise HTTPException(
@@ -280,8 +286,19 @@ async def vendor_package(
     if org is None:
         return no_org_page(request, VENDOR_ACTIVE)
     vendor = await _vendor(session, vid, org)
+    return await _vendor_page(request, session, vendor, _class(cls))
+
+
+async def _vendor_page(
+    request: Request,
+    session: AsyncSession,
+    vendor: Vendor,
+    chosen: str | None,
+    outcome: dict[str, Any] | None = None,
+) -> Response:
+    """The vendor's package page. ``outcome`` is an upload's result, rendered by
+    the POST itself: a result read from the URL could be forged by a link."""
     docs = await _vendor_docs(session, vendor)
-    chosen = _class(cls)
     model, problem = _model({k: r.document for k, r in docs.items()}, chosen)
     return templates.TemplateResponse(
         request,
@@ -298,8 +315,7 @@ async def vendor_package(
             "states": xw.STATES,
             "notice": xw.NOTICE,
             "can_upload": _can(request, *UPLOAD_ROLES),
-            "uploaded": request.query_params.get("uploaded"),
-            "refused": request.query_params.getlist("refused")[:12],
+            "outcome": outcome,
             "export_base": f"/vendors/{vendor.id}/fedramp-package/export",
             "max_mb": MAX_FILE_BYTES // (1024 * 1024),
         },
@@ -321,32 +337,40 @@ async def vendor_package_upload(
     files: list[UploadFile] = File(...),
     session: AsyncSession = Depends(get_session),
     principal: Principal = Depends(require_role(*UPLOAD_ROLES)),
-) -> RedirectResponse:
+) -> Response:
     """Store each file under the kind its contents show, judged against FedRAMP's
-    schema. An invalid file is kept with its verdict; a file that is not JSON, or
-    not a package document at all, is refused and named back to the reviewer."""
+    schema. An invalid file is kept with its verdict; a file that cannot be read
+    as a package document, or a second file of a kind already in this upload,
+    is refused and named back to the reviewer. The page is rendered here, with
+    the outcome, rather than redirected to a URL that carries it."""
     org = principal.org_id
     if org is None:
         raise HTTPException(400, "this action needs an organization; sign in as a member of one")
     vendor = await _vendor(session, vid, org)
     docs = await _vendor_docs(session, vendor)
-    stored = 0
+    stored: list[str] = []
     refused: list[str] = []
+    seen: set[str] = set()
     for upload in files[:12]:
         name = (upload.filename or "file").replace("\n", " ")[:255]
         data = await _read_limited(upload)
         if data is None:
             refused.append(f"{name}: larger than {MAX_FILE_BYTES // (1024 * 1024)} MB")
             continue
-        try:
-            doc = json.loads(data.decode("utf-8-sig"))
-        except (UnicodeDecodeError, ValueError):
-            refused.append(f"{name}: not JSON")
+        doc, why = _parse(data)
+        if why is not None:
+            refused.append(f"{name}: {why}")
             continue
         kind = xw.detect_kind(doc)
         if kind is None:
             refused.append(f"{name}: not a FedRAMP certification package document")
             continue
+        if kind in seen:
+            refused.append(
+                f"{name}: a second {xw.PACKAGE_KINDS[kind]} in this upload; only the first is kept"
+            )
+            continue
+        seen.add(kind)
         report = validate_document(doc, kind)
         row = docs.get(kind)
         before = row.sha256 if row is not None else None
@@ -377,18 +401,45 @@ async def vendor_package_upload(
                 "valid": report.ok,
             },
         )
-        stored += 1
+        stored.append(f"{name}: {xw.PACKAGE_KINDS[kind]}")
     if files[12:]:
         refused.append(f"{len(files) - 12} more file(s): at most 12 per upload")
     await session.commit()
-    query = f"uploaded={stored}" + "".join(f"&refused={_q(r)}" for r in refused)
-    return RedirectResponse(f"/vendors/{vendor.id}/fedramp-package?{query}", status_code=303)
+    return await _vendor_page(
+        request, session, vendor, None, {"stored": stored, "refused": refused}
+    )
 
 
-def _q(text: str) -> str:
-    from urllib.parse import quote  # noqa: PLC0415
+def _refuse_constant(name: str) -> Any:
+    raise ValueError(f"{name} is not JSON")
 
-    return quote(text[:200], safe="")
+
+def _parse(data: bytes) -> tuple[Any, str | None]:
+    """(document, None), or (None, why) for a file that cannot be stored.
+
+    Beyond "not JSON": NaN/Infinity (not JSON, and refused by jsonb), nesting
+    deep enough to exhaust the parser, and a NUL character in any string
+    (jsonb refuses ``\\u0000``). Each is refused here, by name, instead of
+    failing the database write and losing every other file in the upload."""
+    try:
+        doc = json.loads(data.decode("utf-8-sig"), parse_constant=_refuse_constant)
+    except (UnicodeDecodeError, ValueError):
+        return None, "not JSON"
+    except RecursionError:
+        return None, "nested too deeply to read"
+    stack: list[Any] = [doc]
+    while stack:
+        node = stack.pop()
+        if isinstance(node, dict):
+            for key, value in node.items():
+                if "\x00" in key:
+                    return None, "contains a NUL character, which cannot be stored"
+                stack.append(value)
+        elif isinstance(node, list):
+            stack.extend(node)
+        elif isinstance(node, str) and "\x00" in node:
+            return None, "contains a NUL character, which cannot be stored"
+    return doc, None
 
 
 @router.post("/vendors/{vid}/fedramp-package/{kind}/delete")

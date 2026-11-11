@@ -5,8 +5,10 @@
 {% block subtitle %}The provider's certification package files, checked against FedRAMP's schemas and read against the Rev5 baseline. Files stay in Concord, scoped to your organization.{% endblock %}
 {% block actions %}<a class="btn btn--secondary" href="/vendors/fedramp-packages"><i data-lucide="arrow-left"></i>All vendors</a>{% endblock %}
 {% block content %}
-{% if uploaded is not none %}<div class="note" role="status">{{ uploaded }} file{{ 's' if uploaded != '1' }} stored.</div>{% endif %}
-{% if refused %}<div class="note note--warn" role="status"><strong>Not stored:</strong><ul>{% for r in refused %}<li>{{ r }}</li>{% endfor %}</ul></div>{% endif %}
+{% if outcome %}
+<div class="note" role="status"><strong>{{ outcome.stored | length }} file{{ 's' if outcome.stored | length != 1 }} stored.</strong>{% if outcome.stored %}<ul>{% for r in outcome.stored %}<li>{{ r }}</li>{% endfor %}</ul>{% endif %}</div>
+{% if outcome.refused %}<div class="note note--warn" role="status"><strong>Not stored:</strong><ul>{% for r in outcome.refused %}<li>{{ r }}</li>{% endfor %}</ul></div>{% endif %}
+{% endif %}
 <article class="card panel" style="margin-bottom:16px">
   <header class="panel__head"><h2 class="panel__title">Package documents</h2><span class="panel__hint">a file with schema errors is kept and shown, not silently dropped</span></header>
   {{ documents_table(docs, kinds) }}

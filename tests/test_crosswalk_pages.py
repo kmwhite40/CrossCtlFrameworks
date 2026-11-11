@@ -13,7 +13,6 @@ import json
 import os
 from pathlib import Path
 from typing import Any
-from urllib.parse import unquote
 
 import pytest
 from alembic import command
@@ -102,7 +101,7 @@ async def _org(label: str) -> dict[str, Any]:
         s.add_all([*users.values(), vendor, classed, unclassed])
         await s.flush()
         for sys_ in (classed, unclassed):
-            for name, data in _files():
+            for _name, data in _files():
                 doc = json.loads(data)
                 s.add(
                     Cr26Document(
@@ -158,7 +157,7 @@ async def test_an_upload_is_recognised_validated_stored_and_audited(two_orgs) ->
     a, _ = two_orgs
     async with _client() as c:
         resp = await _upload(c, a["vendor"], a["tokens"]["control_owner"], _files())
-    assert resp.status_code == 303 and "uploaded=6" in resp.headers["location"]
+    assert resp.status_code == 200 and "6 files stored." in resp.text
     docs = await _docs(a["vendor"])
     assert set(docs) == set(xw.PACKAGE_KINDS)
     assert all(d.is_valid and d.organization_id == a["org"] for d in docs.values())
@@ -238,14 +237,63 @@ async def test_files_that_are_not_package_documents_are_refused_by_name(
                 ("notes.txt", b"hello"),
                 ("other.json", b'{"a": 1}'),
                 ("huge.json", b"{" + b" " * 3000 + b"}"),
+                ("nan.json", b'{"vulnerabilities": [], "reportPeriod": {"x": NaN}}'),
+                ("nul.json", b'{"vulnerabilities": [], "reportPeriod": {"x": "a\\u0000b"}}'),
             ],
         )
-    where = unquote(resp.headers["location"])
-    assert "uploaded=0" in where
-    assert "notes.txt: not JSON" in where
-    assert "other.json: not a FedRAMP certification package document" in where
-    assert "huge.json: larger than" in where
+    page = resp.text
+    assert resp.status_code == 200 and "0 files stored." in page
+    assert "notes.txt: not JSON" in page
+    assert "other.json: not a FedRAMP certification package document" in page
+    assert "huge.json: larger than" in page
+    assert "nan.json: not JSON" in page
+    assert "nul.json: contains a NUL character" in page
     assert await _docs(a["vendor"]) == {}
+
+
+async def test_json_nested_too_deeply_is_refused_not_a_server_error(two_orgs) -> None:
+    a, _ = two_orgs
+    async with _client() as c:
+        resp = await _upload(
+            c, a["vendor"], a["tokens"]["admin"], [("deep.json", b"[" * 200000 + b"]" * 200000)]
+        )
+    assert resp.status_code == 200 and "deep.json: nested too deeply to read" in resp.text
+
+
+async def test_one_bad_file_does_not_lose_the_good_ones(two_orgs) -> None:
+    """A file jsonb would refuse used to fail the whole upload with a 500."""
+    a, _ = two_orgs
+    async with _client() as c:
+        resp = await _upload(
+            c,
+            a["vendor"],
+            a["tokens"]["admin"],
+            [("nul.json", b'{"vulnerabilities": [], "reportPeriod": {"x": "\\u0000"}}'), *_files()],
+        )
+    assert resp.status_code == 200 and "6 files stored." in resp.text
+    assert len(await _docs(a["vendor"])) == 6
+
+
+async def test_a_second_file_of_the_same_kind_in_one_upload_is_refused(two_orgs) -> None:
+    a, _ = two_orgs
+    sdr = next((n, d) for n, d in _files() if "security-decision" in n)
+    async with _client() as c:
+        resp = await _upload(c, a["vendor"], a["tokens"]["admin"], [sdr, ("again.json", sdr[1])])
+    assert "1 file stored." in resp.text
+    assert "again.json: a second Security Decision Record in this upload" in resp.text
+    assert (await _docs(a["vendor"]))["sdr"].filename == sdr[0]
+
+
+async def test_the_upload_outcome_cannot_be_forged_by_a_link(two_orgs) -> None:
+    a, _ = two_orgs
+    async with _client() as c:
+        page = (
+            await c.get(
+                f"/vendors/{a['vendor']}/fedramp-package?uploaded=6&refused=forged",
+                headers=_auth(a["tokens"]["viewer"]),
+            )
+        ).text
+    assert "files stored" not in page and "forged" not in page
 
 
 @pytest.mark.parametrize("role", ["assessor", "viewer"])
@@ -349,7 +397,7 @@ async def test_removing_a_document_is_audited(two_orgs) -> None:
             headers=_auth(a["tokens"]["control_owner"]),
         )
     assert resp.status_code == 303
-    assert "sdr" not in await _docs(a["vendor"])
+    assert "sdr" not in await _docs(a["vendor"])  # removal still redirects (no outcome to show)
     async with session_scope() as s:
         await set_session_tenant(s, None)
         deleted = (
@@ -406,3 +454,16 @@ async def test_an_unscoped_session_is_told_rather_than_shown_every_tenant() -> N
         for path in ("/fedramp20x/agency-view", "/vendors/fedramp-packages"):
             resp = await c.get(path)
             assert resp.status_code == 200 and "No organization in scope" in resp.text, path
+
+
+async def test_the_preview_applies_the_systems_recorded_path(two_orgs) -> None:
+    a, _ = two_orgs
+    async with session_scope() as s:
+        await set_session_tenant(s, None)
+        (await s.get(System, a["system"])).certification_path = "program"
+    async with _client() as c:
+        page = (
+            await c.get(f"/systems/{a['system']}/agency-view", headers=_auth(a["tokens"]["viewer"]))
+        ).text
+    assert "Program path" in page
+    assert "the certification path is not known" not in page

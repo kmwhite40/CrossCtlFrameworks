@@ -44,6 +44,7 @@ import io
 import json
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -133,6 +134,7 @@ class Mapped:
     affects: tuple[str, ...] = ()
     types: tuple[str, ...] = ()
     classes: tuple[str, ...] = ()
+    paths: tuple[str, ...] = ()
 
     def statement(self, cls: str) -> str:
         return self.statements.get("*") or self.statements.get(cls.lower(), "")
@@ -252,6 +254,7 @@ def build_reference(rules: ConsolidatedRules) -> Reference:
                         affects=tuple(v.get("affects") or app.get("affects") or ()),
                         types=tuple(app.get("types") or ()),
                         classes=tuple(str(c).upper() for c in app.get("classes") or ()),
+                        paths=tuple(str(x).capitalize() for x in app.get("paths") or ()),
                     )
     bsl = data["FRR"]["FRC"]["data"]["rev5"]["CSF"]["FRC-CSF-BSL"]["varies_by_class"]
     baselines: dict[str, tuple[str, ...]] = {}
@@ -496,7 +499,10 @@ def coverage_state(direct: Entry | None, links: Sequence[Link]) -> str:
 @dataclass
 class Model:
     cls: str
-    certification_type: str
+    #: ``"Rev5"`` or ``"20x"`` as the package states it; ``None`` when it does not.
+    certification_type: str | None
+    #: ``"Program"`` or ``"Agency"`` when known (the provider preview); else ``None``.
+    certification_path: str | None
     rules_version: str
     controls: list[ControlRow]
     counts: dict[str, int]
@@ -525,11 +531,16 @@ def identity(cpo: Mapping[str, Any] | None) -> dict[str, str]:
     }
 
 
-def applicable_rules(ref: Reference, certification_type: str, cls: str) -> list[str]:
-    """The FedRAMP rules a provider of this type and class is expected to address.
+def applicable_rules(
+    ref: Reference, certification_type: str | None, cls: str, path: str | None = None
+) -> list[str] | None:
+    """The FedRAMP rules a provider of this type, class and path is expected to
+    address, or ``None`` when the type is not known.
 
-    From the type, class and affected-party metadata in the rules file. Effective
-    dates are not checked (as upstream)."""
+    From the type, class, path and affected-party metadata in the rules file. A
+    path is applied only when known. Effective dates are not checked."""
+    if certification_type is None:
+        return None
     bucket = "rev5" if certification_type == "Rev5" else "20x"
     out = []
     for rid, r in ref.frr.items():
@@ -539,16 +550,23 @@ def applicable_rules(ref: Reference, certification_type: str, cls: str) -> list[
             continue
         if r.classes and cls.upper() not in r.classes:
             continue
+        if path and r.paths and path not in r.paths:
+            continue
         if "*" not in r.statements and cls.lower() not in r.statements:
             continue
         out.append(rid)
     return sorted(out)
 
 
-def expected_ksis(certification_type: str, cls: str) -> tuple[list[str], list[str], str]:
-    """(required, optional, basis) KSIs for the package, from Concord's applicability.
+def expected_ksis(
+    certification_type: str | None, cls: str, path: str | None = None
+) -> tuple[list[str] | None, list[str], str]:
+    """(required, optional, basis) KSIs, from Concord's applicability.
 
-    A Rev5 certification owes the control list (IVV-CSF-AIA), not indicators."""
+    ``required`` is ``None`` when it cannot be known: the package does not
+    state its type and no path is recorded. A Rev5 certification owes the
+    control list (IVV-CSF-AIA), not indicators; so does any certification on
+    a Rev5-only path, which :func:`applicability.for_class` decides."""
     if certification_type == "Rev5":
         return (
             [],
@@ -558,7 +576,17 @@ def expected_ksis(certification_type: str, cls: str) -> tuple[list[str], list[st
                 "Indicators; no indicator is expected."
             ),
         )
-    scope = applicability.for_class(load_rules(), cls, None)
+    if certification_type is None and path is None:
+        return (
+            None,
+            [],
+            (
+                "The package does not state its certification type (it has no Certification "
+                "Package Overview saying Rev5 or 20x), so which indicators it owes is not known. "
+                "A Rev5 certification owes none."
+            ),
+        )
+    scope = applicability.for_class(load_rules(), cls, path)
     required = sorted(
         k for k, a in scope.by_identifier.items() if a.status == applicability.REQUIRED
     )
@@ -568,9 +596,16 @@ def expected_ksis(certification_type: str, cls: str) -> tuple[list[str], list[st
     return required, optional, scope.basis
 
 
-def build_model(pkg: Mapping[str, Any], cls: str, *, ref: Reference | None = None) -> Model:
+def build_model(
+    pkg: Mapping[str, Any],
+    cls: str,
+    *,
+    path: str | None = None,
+    ref: Reference | None = None,
+) -> Model:
     """The whole derived view. ``pkg`` maps a kind of :data:`PACKAGE_KINDS` to its
-    document; any may be missing. ``cls`` is B, C or D."""
+    document; any may be missing. ``cls`` is B, C or D. ``path`` (program or
+    agency) is passed when known -- the provider preview knows the system's."""
     ref = ref or reference()
     cls = (cls or "").strip().upper()
     if cls not in ref.baselines:
@@ -581,7 +616,9 @@ def build_model(pkg: Mapping[str, Any], cls: str, *, ref: Reference | None = Non
     sdr = pkg.get("sdr") if isinstance(pkg.get("sdr"), dict) else {}
     cpo = pkg.get("cpo") if isinstance(pkg.get("cpo"), dict) else {}
     ident = identity(cpo)
-    ctype = "Rev5" if ident["type"] == "Rev5" else "20x"
+    # Only what the package states: no CPO, or a type it does not name, is unknown.
+    ctype = ident["type"] if ident["type"] in ("Rev5", "20x") else None
+    path = path.strip().capitalize() if path and path.strip() else None
     ksi_in, frr_in, ctl_in, unreadable = _sdr_entries(sdr or {})
     unknown = {
         "ksi": sorted(k for k in ksi_in if k not in ref.ksi),
@@ -616,26 +653,28 @@ def build_model(pkg: Mapping[str, Any], cls: str, *, ref: Reference | None = Non
                 ref.guidance.get(cid, ()),
             )
         )
-    required, optional, basis = expected_ksis(ctype, cls)
-    rules = applicable_rules(ref, ctype, cls)
+    required, optional, basis = expected_ksis(ctype, cls, path)
+    rules = applicable_rules(ref, ctype, cls, path)
     completeness = {
         "ksi": {
-            "expected": len(required),
-            "reported": sum(1 for k in required if k in ksi_in),
-            "missing": [k for k in required if k not in ksi_in],
+            "expected": None if required is None else len(required),
+            "reported": None if required is None else sum(1 for k in required if k in ksi_in),
+            "missing": [] if required is None else [k for k in required if k not in ksi_in],
             "optional": optional,
             "basis": basis,
         },
         "frr": {
-            "expected": len(rules),
-            "reported": sum(1 for r in rules if r in frr_in),
-            "missing": [r for r in rules if r not in frr_in],
+            "expected": None if rules is None else len(rules),
+            "reported": None if rules is None else sum(1 for r in rules if r in frr_in),
+            "missing": [] if rules is None else [r for r in rules if r not in frr_in],
+            "path_applied": path is not None,
         },
     }
     inside = set(baseline)
     return Model(
         cls=cls,
         certification_type=ctype,
+        certification_path=path,
         rules_version=ref.rules_version,
         controls=rows,
         counts=counts,
@@ -653,11 +692,30 @@ CLOSED_DISPOSITIONS = frozenset({"Remediated", "False Positive", "Fully Mitigate
 
 
 def _doc_date(kind: str, doc: Mapping[str, Any]) -> str:
-    """The date a vulnerability document speaks for (ISO text sorts correctly)."""
+    """The date a vulnerability document speaks for, as the document writes it."""
     if kind == "ver_history":
         return _str(doc.get("generatedAt"))
     period = doc.get("reportPeriod")
     return _str(period.get("to")) if isinstance(period, dict) else ""
+
+
+_OLDEST = datetime.min.replace(tzinfo=UTC)
+
+
+def _instant(text: str) -> datetime:
+    """An RFC 3339 date-time as an aware UTC instant, for ordering.
+
+    Compared as text, ``...T23:59:59-04:00`` sorts before ``...T01:00:00Z`` the
+    next day, which it follows, and ``.123Z`` before ``Z``. A date alone is
+    midnight UTC; anything unreadable sorts as the oldest."""
+    s = text.strip()
+    if not s:
+        return _OLDEST
+    try:
+        dt = datetime.fromisoformat(s.replace("Z", "+00:00").replace("z", "+00:00"))
+    except ValueError:
+        return _OLDEST
+    return dt.replace(tzinfo=UTC) if dt.tzinfo is None else dt.astimezone(UTC)
 
 
 def _observations(
@@ -705,7 +763,7 @@ def build_register(pkg: Mapping[str, Any]) -> list[dict[str, Any]]:
             seen.setdefault(tid, []).append((when, order, kind, v, accepted, why))
     rows: list[dict[str, Any]] = []
     for tid, obs in seen.items():
-        when, _, kind, v, accepted, why = max(obs, key=lambda o: (o[0], o[1]))
+        when, _, kind, v, accepted, why = max(obs, key=lambda o: (_instant(o[0]), o[1]))
         disposition = _str(v.get("finalDisposition"))
         detection = _obj(v, "detection")
         reduction = _obj(v, "projectedNextReduction")

@@ -53,6 +53,23 @@ at those files.
    observation decides the row, including whether it is accepted.
 3. **Status matching.** A missing or unrecognised status is never read as
    Implemented (kept from upstream; pinned by a test).
+4. **The certification type was defaulted to 20x.** Upstream reads any package
+   whose overview does not say "Rev5" as 20x, so a Rev5 package uploaded
+   without its CPO showed every KSI as a missing gap. Concord takes the type
+   only from the package; when it is not stated, which KSIs and rules are
+   owed is shown as not known. The provider preview also passes the
+   system's recorded Certification Path, which narrows both.
+
+## After the independent review (2026-11-11)
+
+No Critical or High finding. Fixed: the type default (above); register
+dates compared as text (RFC 3339 offsets and fractions now order as
+instants); uploads that failed the database write with a 500 and lost every
+file (NaN/Infinity, deep nesting, a NUL in a string are now refused by name);
+two files of one kind in one upload (the second is refused); the upload
+outcome read from the URL (now rendered by the POST itself, so a link cannot
+forge it); rules not filtered by path (filtered when known, and the page says
+when it is not).
 
 ## Coverage states (Concord)
 
